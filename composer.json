@@ -1,0 +1,34 @@
+{
+  "name": "robokassa/sdk-php",
+  "description": "SDK для работы с Robokassa в PHP",
+  "type": "library",
+  "license": "MIT",
+  "authors": [
+    {
+      "name": "Robokassa",
+      "email": "support@robokassa.ru"
+    }
+  ],
+  "require": {
+    "php": ">=7.4",
+    "guzzlehttp/guzzle": "^7.0"
+  },
+  "require-dev": {
+    "phpunit/phpunit": "^9.0"
+  },
+  "autoload": {
+    "psr-4": {
+      "Robokassa\\": "src/"
+    }
+  },
+  "autoload-dev": {
+    "psr-4": {
+      "Robokassa\\Tests\\": "tests/"
+    }
+  },
+  "minimum-stability": "dev",
+  "prefer-stable": true,
+  "scripts": {
+    "test": "phpunit --bootstrap vendor/autoload.php tests/"
+  }
+}
