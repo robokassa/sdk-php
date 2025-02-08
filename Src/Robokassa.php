@@ -9,9 +9,9 @@ class Robokassa
 {
 
     /**
-     * @var Client $client
+     * @var Client $httpClient
      */
-    private Client $client;
+    private Client $httpClient;
 
     /**
      * @var string
@@ -121,7 +121,7 @@ class Robokassa
         $this->password1 = $this->is_test ? $params['test_password1'] : $params['password1'];
         $this->password2 = $this->is_test ? $params['test_password2'] : $params['password2'];
 
-        $this->client = new Client([
+        $this->httpClient = new Client([
             'timeout'  => 5.0,
         ]);
     }
@@ -147,8 +147,8 @@ class Robokassa
         ];
 
         if (!empty($params['Receipt'])) {
-            $params['Receipt'] = json_encode($params['Receipt']);
-            $signatureParams['Receipt'] = $params['Receipt'];
+            $signatureParams['Receipt'] = urlencode(json_encode($params['Receipt']));
+            $params['Receipt'] = urlencode($signatureParams['Receipt']);
         }
 
         $params['SignatureValue'] = $this->generateSignature($signatureParams);
@@ -334,7 +334,7 @@ class Robokassa
      */
     private function getRequest($url): array
     {
-        $response = $this->client->get($url);
+        $response = $this->httpClient->get($url);
 
         if ($response->getStatusCode() === 200) {
             $xml = $response->getBody()->getContents();
@@ -398,5 +398,4 @@ class Robokassa
     {
         return $this->hashType;
     }
-
 }
