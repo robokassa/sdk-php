@@ -304,6 +304,27 @@ class Robokassa
     }
 
     /**
+     * Проверка платежа на SuccessURL
+     *
+     * @param $params
+     * @return bool
+     * 
+     * @see https://docs.robokassa.ru/pay-interface/#notification
+     */
+    public function checkSuccess($params): bool
+    {
+        foreach ($params as $key => $value) {
+            if (!preg_match('~^Shp_~iu', $key)) {
+                continue;
+            }
+
+            $params[$key] = urldecode($value);
+        }
+
+        return $this->checkHash($params, $this->getPassword1());
+    }
+
+    /**
      * Подпись для запроса оплаты
      *
      * @param $params
@@ -398,5 +419,4 @@ class Robokassa
     {
         return $this->hashType;
     }
-
 }
