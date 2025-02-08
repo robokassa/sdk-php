@@ -151,6 +151,20 @@ class Robokassa
             $signatureParams['Receipt'] = $params['Receipt'];
         }
 
+        if ($this->is_test) {
+            $params['IsTest'] = '1';
+        }
+
+        $fields = $this->getFields($params);
+
+        if (!empty($fields)) {
+            $signatureParams = array_merge($signatureParams, $fields);
+
+            foreach ($fields as $name => $value) {
+                $params[$name] = urlencode($value);
+            };
+        }
+
         $params['SignatureValue'] = $this->generateSignature($signatureParams);
 
         try {
@@ -250,8 +264,10 @@ class Robokassa
                 continue;
             }
 
-            $fields[$key] = $value;
+            $fields[$key] = urlencode($value);
         }
+
+        ksort($fields);
 
         return $fields;
     }
@@ -263,21 +279,15 @@ class Robokassa
      */
     private function getHashFields($params, $required): string
     {
-        $fields = [];
-
         foreach ($params as $key => $value) {
             if (!preg_match('~^Shp_~iu', $key)) {
                 continue;
             }
 
-            $fields[] = $key . '=' . $value;
+            $required[] = $key . '=' . $value;
         }
 
         $hash = implode(':', $required);
-
-        if (!empty($fields)) {
-            $hash .= ':' . implode(':', $fields);
-        }
 
         return $hash;
     }
@@ -398,5 +408,4 @@ class Robokassa
     {
         return $this->hashType;
     }
-
 }
