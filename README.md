@@ -15,6 +15,8 @@ composer require robokassa/sdk-php
 | `sendPaymentRequestCurl(array $params): string` | Создает ссылку на оплату |
 | `getPaymentMethods(string $lang = 'ru'): array` | Получает доступные методы оплаты |
 | `opState(int $invoiceID): array` | Получает статус оплаты по `InvoiceID` |
+| `checkSuccess(array $params): bool` | Валидация ответа на `ResultURL` |
+
 
 ⚡ **В будущем будут добавлены новые методы**.
 
