@@ -6,9 +6,9 @@ use Robokassa\Robokassa;
 
 try {
     $robokassa = new Robokassa([
-        'login' => 'merchant_login',
-        'password1' => 'password1',
-        'password2' => 'password2',
+        'login' => 'robo-demo-PSB',
+        'password1' => 'n8zdDK9Oumg86UiRO8mv',
+        'password2' => 'h34AL4TI3ZugJrdcATJ0',
         'hashType' => 'md5'
     ]);
 

@@ -8,10 +8,7 @@ use GuzzleHttp\Client;
 class Robokassa
 {
 
-    /**
-     * @var Client $client
-     */
-    private Client $client;
+    private $httpClient;
 
     /**
      * @var string
@@ -80,6 +77,8 @@ class Robokassa
     public function __construct($params)
     {
 
+        $this->httpClient = new Client();
+
         if (empty($params)) {
             throw new Exception('Params is not defined');
         }
@@ -121,9 +120,6 @@ class Robokassa
         $this->password1 = $this->is_test ? $params['test_password1'] : $params['password1'];
         $this->password2 = $this->is_test ? $params['test_password2'] : $params['password2'];
 
-        $this->client = new Client([
-            'timeout'  => 5.0,
-        ]);
     }
 
 
@@ -147,8 +143,22 @@ class Robokassa
         ];
 
         if (!empty($params['Receipt'])) {
-            $params['Receipt'] = json_encode($params['Receipt']);
-            $signatureParams['Receipt'] = $params['Receipt'];
+            $signatureParams['Receipt'] = urlencode(json_encode($params['Receipt']));
+            $params['Receipt'] = urlencode($signatureParams['Receipt']);
+        }
+
+        if ($this->is_test) {
+            $params['IsTest'] = '1';
+        }
+
+        $fields = $this->getFields($params);
+
+        if (!empty($fields)) {
+            $signatureParams = array_merge($signatureParams, $fields);
+
+            foreach ($fields as $name => $value) {
+                $params[$name] = urlencode($value);
+            };
         }
 
         $params['SignatureValue'] = $this->generateSignature($signatureParams);
@@ -250,8 +260,10 @@ class Robokassa
                 continue;
             }
 
-            $fields[$key] = $value;
+            $fields[$key] = urlencode($value);
         }
+
+        ksort($fields);
 
         return $fields;
     }
@@ -270,7 +282,7 @@ class Robokassa
                 continue;
             }
 
-            $fields[] = $key . '=' . $value;
+            $required[] = $key . '=' . $value;
         }
 
         $hash = implode(':', $required);
@@ -332,16 +344,20 @@ class Robokassa
      * @param $url
      * @return array
      */
-    private function getRequest($url): array
+    private function getRequest(string $url): array
     {
-        $response = $this->client->get($url);
+        try {
+            $response = $this->httpClient->request('GET', $url);
 
-        if ($response->getStatusCode() === 200) {
-            $xml = $response->getBody()->getContents();
-            return $this->getXmlInArray($xml);
+            if ($response->getStatusCode() === 200) {
+                $xml = $response->getBody()->getContents();
+                return $this->getXmlInArray($xml);
+            }
+
+            throw new Exception("Ошибка запроса: HTTP " . $response->getStatusCode());
+        } catch (Exception $e) {
+            throw new Exception("Ошибка запроса: " . $e->getMessage());
         }
-
-        throw new Exception("Ошибка запроса: HTTP " . $response->getStatusCode());
     }
 
 

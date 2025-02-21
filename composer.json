@@ -18,7 +18,7 @@
   },
   "autoload": {
     "psr-4": {
-      "Robokassa\\": "src/"
+      "Robokassa\\": "Src/"
     }
   },
   "autoload-dev": {
