@@ -25,6 +25,10 @@ class Robokassa
      */
     private string $recurrentUrl = 'https://auth.robokassa.ru/Merchant/Recurring';
 
+    /**
+     * @var string
+     */
+    private string $jwtApiUrl = 'https://services.robokassa.ru/InvoiceServiceWebApi/api/CreateInvoice';
 
     /**
      * @var string
@@ -122,7 +126,6 @@ class Robokassa
 
     }
 
-
     /**
      * Send payment request via CURL
      *
@@ -164,7 +167,7 @@ class Robokassa
         $params['SignatureValue'] = $this->generateSignature($signatureParams);
 
         try {
-            $response = $this->httpClient->post('https://auth.robokassa.ru/Merchant/Indexjson.aspx', [
+            $response = $this->httpClient->post($this->paymentCurl, [
                 'form_params' => $params,
             ]);
 
@@ -172,7 +175,7 @@ class Robokassa
                 $responseData = json_decode($response->getBody()->getContents(), true);
 
                 if (!empty($responseData['invoiceID'])) {
-                    return 'https://auth.robokassa.ru/Merchant/Index/' . $responseData['invoiceID'];
+                    return $this->paymentUrl . $responseData['invoiceID'];
                 }
 
                 throw new Exception('Invoice ID not found in response.');
@@ -181,6 +184,107 @@ class Robokassa
             throw new Exception('Failed to send payment request. HTTP Status: ' . $response->getStatusCode());
         } catch (Exception $e) {
             throw new Exception('CURL request failed: ' . $e->getMessage());
+        }
+    }
+
+    /**
+     * Отправляет запрос на создание счёта через Robokassa JWT-интерфейс
+     *
+     * @param array $params Параметры платежа:
+     *  - OutSum (float, обяз.)
+     *  - InvId (int, обяз.)
+     *  - Description (string, опц.)
+     *  - MerchantComments (string, опц.)
+     *  - InvoiceItems (array, опц.)
+     *  - UserFields (array, опц.)
+     *  - SuccessUrl2Data (array, опц.)
+     *  - FailUrl2Data (array, опц.)
+     *  - InvoiceType (string, опц.)
+     *  - Culture (string, опц.)
+     *
+     * @return string URL для оплаты счёта
+     * @throws Exception
+     */
+    public function sendPaymentRequestJwt(array $params): string
+    {
+        if (empty($params['OutSum']) || !isset($params['InvId'])) {
+            throw new Exception('Required parameters: OutSum, InvId');
+        }
+
+        $merchantLogin = $this->getLogin();
+        $password1 = $this->getPassword1();
+
+        $header = ['alg' => 'MD5', 'typ' => 'JWT'];
+
+        $payload = [
+            'MerchantLogin' => $merchantLogin,
+            'InvoiceType'   => $params['InvoiceType'] ?? 'OneTime',
+            'Culture'       => $params['Culture'] ?? 'ru',
+            'InvId'         => (int) $params['InvId'],
+            'OutSum'        => (float) $params['OutSum'],
+        ];
+
+        if (!empty($params['Description'])) {
+            $payload['Description'] = $params['Description'];
+        }
+
+        if (!empty($params['MerchantComments'])) {
+            $payload['MerchantComments'] = $params['MerchantComments'];
+        }
+
+        if (!empty($params['InvoiceItems'])) {
+            $payload['InvoiceItems'] = $params['InvoiceItems'];
+        }
+
+        if (!empty($params['UserFields']) && is_array($params['UserFields'])) {
+            $payload['UserFields'] = $params['UserFields'];
+        }
+
+        if (!empty($params['SuccessUrl2Data'])) {
+            $payload['SuccessUrl2Data'] = $params['SuccessUrl2Data'];
+        }
+
+        if (!empty($params['FailUrl2Data'])) {
+            $payload['FailUrl2Data'] = $params['FailUrl2Data'];
+        }
+
+        $encodedHeader = $this->base64UrlEncode(json_encode($header, JSON_UNESCAPED_UNICODE));
+        $encodedPayload = $this->base64UrlEncode(json_encode($payload, JSON_UNESCAPED_UNICODE));
+        $dataToSign = $encodedHeader . '.' . $encodedPayload;
+
+        $signatureRaw = hash_hmac('md5', $dataToSign, $merchantLogin . ':' . $password1, true);
+        $encodedSignature = $this->base64UrlEncode($signatureRaw);
+
+        $jwt = $dataToSign . '.' . $encodedSignature;
+
+        try {
+            $response = $this->httpClient->post(
+                $this->jwtApiUrl,
+                [
+                    'body' => json_encode($jwt),
+                    'headers' => [
+                        'Content-Type' => 'application/json',
+                    ],
+                ]
+            );
+
+            $bodyRaw = $response->getBody()->getContents();
+            $responseData = json_decode($bodyRaw, true);
+
+            if (!empty($responseData['url'])) {
+                return $responseData['url'];
+            }
+
+            throw new Exception('JWT request failed: ' . $bodyRaw);
+
+        } catch (Exception $e) {
+            if ($e instanceof \GuzzleHttp\Exception\ClientException) {
+                $response = $e->getResponse();
+                $body = $response ? $response->getBody()->getContents() : null;
+                throw new Exception('JWT request failed: ' . $body);
+            }
+
+            throw new Exception('JWT request failed: ' . $e->getMessage());
         }
     }
 
@@ -295,27 +399,6 @@ class Robokassa
     }
 
     /**
-     * @param $params
-     * @param $password
-     * @return bool
-     */
-    private function checkHash($params, $password): bool
-    {
-        $required = [
-            $params['OutSum'],
-            $params['InvId'],
-            $password
-        ];
-
-        $hash = $this->getHashFields($params, $required);
-
-        $crc = strtoupper($params['SignatureValue']);
-        $my_crc = strtoupper(hash($this->getHashType(), $hash));
-
-        return $my_crc === $crc;
-    }
-
-    /**
      * Подпись для запроса оплаты
      *
      * @param $params
@@ -413,6 +496,17 @@ class Robokassa
     private function getHashType(): string
     {
         return $this->hashType;
+    }
+
+    /**
+     * Кодирует строку в формат base64 URL (без =, + и /)
+     *
+     * @param string $data
+     * @return string
+     */
+    private function base64UrlEncode(string $data): string
+    {
+        return rtrim(strtr(base64_encode($data), '+/', '-_'), '=');
     }
 
 }
