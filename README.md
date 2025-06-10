@@ -24,10 +24,10 @@ composer require robokassa/sdk-php
 
 Полные примеры использования SDK находятся в папке [`examples/`](./examples):
 
-* [`sendPaymentRequestJwt.php`](./examples/sendPaymentRequestJwt.php) — создание ссылки на оплату через **JWT** (рекомендуется)
-* [`sendPaymentRequestCurl.php`](./examples/sendPaymentRequestCurl.php) — создание ссылки на оплату через стандартный CURL-интерфейс
-* [`getPaymentMethods.php`](./examples/getPaymentMethods.php) — получение доступных способов оплаты
-* [`opState.php`](./examples/opState.php) — проверка статуса счёта
+* [`sendPaymentRequestJwt.php`](./examples/send_payment_jwt.php) — создание ссылки на оплату через **JWT** (рекомендуется)
+* [`sendPaymentRequestCurl.php`](./examples/send_payment_curl.php) — создание ссылки на оплату через стандартный CURL-интерфейс
+* [`getPaymentMethods.php`](./examples/get_payment_methods.php) — получение доступных способов оплаты
+* [`opState.php`](./examples/get_invoice_status.php) — проверка статуса счёта
 
 ## 📌 Дополнительно
 
