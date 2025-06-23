@@ -13,7 +13,7 @@ class Robokassa
     /**
      * @var string
      */
-    private string $paymentUrl = 'https://auth.robokassa.ru/Merchant/Index.aspx';
+    private string $paymentUrl = 'https://auth.robokassa.ru/Merchant/Index/';
 
     /**
      * @var string
