@@ -35,6 +35,7 @@ class Robokassa
      */
     private string $webServiceUrl = 'https://auth.robokassa.ru/Merchant/WebService/Service.asmx';
 
+    private const SECOND_CHECK_URL = 'https://ws.roboxchange.com/RoboFiscal/Receipt/Attach';
 
     /**
      * @var bool
@@ -509,4 +510,66 @@ class Robokassa
         return rtrim(strtr(base64_encode($data), '+/', '-_'), '=');
     }
 
+    /**
+     * Генерация строки второго чека: base64(payload).base64(signature)
+     *
+     * @param array $payload
+     * @return string
+     * @throws Exception
+     */
+    public function getSecondCheckUrl(array $payload): string
+    {
+        $json = json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+        if ($json === false) {
+            throw new Exception("Ошибка кодирования JSON");
+        }
+
+        $base64Payload = $this->base64UrlEncode($json);
+        $hashString = $base64Payload . $this->password1;
+
+        $type = strtolower($this->hashType);
+
+        switch ($type) {
+            case 'sha256':
+                $hash = hash('sha256', $hashString);
+                break;
+
+            case 'sha512':
+                $hash = hash('sha512', $hashString);
+                break;
+
+            default:
+                $hash = md5($hashString);
+                break;
+        }
+
+        $base64Signature = $this->base64UrlEncode($hash);
+
+        return $base64Payload . '.' . $base64Signature;
+    }
+
+    public function sendSecondCheck(array $payload): string
+    {
+        $body = $this->getSecondCheckUrl($payload);
+
+        try {
+            $response = $this->httpClient->post(self::SECOND_CHECK_URL, [
+                'body'    => $body,
+                'headers' => [
+                    'Content-Type' => 'application/json',
+                ],
+            ]);
+
+            return $response->getBody()->getContents();
+
+        } catch (ClientException $e) {
+            $resp    = $e->getResponse();
+            $content = $resp ? $resp->getBody()->getContents() : $e->getMessage();
+            throw new \Exception('Ошибка при отправке второго чека: ' . $content);
+
+        } catch (\Exception $e) {
+            throw new \Exception('Ошибка при отправке второго чека: ' . $e->getMessage());
+
+        }
+    }
 }
