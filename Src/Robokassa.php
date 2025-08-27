@@ -4,6 +4,7 @@ namespace Robokassa;
 
 use Exception;
 use GuzzleHttp\Client;
+use GuzzleHttp\Exception\RequestException;
 
 class Robokassa
 {
@@ -36,6 +37,8 @@ class Robokassa
     private string $webServiceUrl = 'https://auth.robokassa.ru/Merchant/WebService/Service.asmx';
 
     private const SECOND_CHECK_URL = 'https://ws.roboxchange.com/RoboFiscal/Receipt/Attach';
+
+    private const CHECK_STATUS_URL = 'https://ws.roboxchange.com/RoboFiscal/Receipt/Status';
 
     /**
      * @var bool
@@ -336,7 +339,7 @@ class Robokassa
             'Signature' => $this->signatureState($invoiceID)
         ]);
 
-        $url = $this->getWebServiceUrl('OpState', $query);
+        $url = $this->getWebServiceUrl('OpStateExt', $query);
 
         return $this->getRequest($url);
     }
@@ -511,6 +514,21 @@ class Robokassa
     }
 
     /**
+     * Генерирует хеш указанной строки по текущему алгоритму ($this->hashType).
+     *
+     * @param string $data
+     * @return string
+     */
+    private function generateHash(string $data): string
+    {
+        $algo = strtolower($this->hashType);
+        if (!in_array($algo, ['md5', 'sha256', 'sha512'], true)) {
+            $algo = 'md5';
+        }
+        return hash($algo, $data);
+    }
+
+    /**
      * Генерация строки второго чека: base64(payload).base64(signature)
      *
      * @param array $payload
@@ -525,23 +543,10 @@ class Robokassa
         }
 
         $base64Payload = $this->base64UrlEncode($json);
+
         $hashString = $base64Payload . $this->password1;
 
-        $type = strtolower($this->hashType);
-
-        switch ($type) {
-            case 'sha256':
-                $hash = hash('sha256', $hashString);
-                break;
-
-            case 'sha512':
-                $hash = hash('sha512', $hashString);
-                break;
-
-            default:
-                $hash = md5($hashString);
-                break;
-        }
+        $hash = $this->generateHash($hashString);
 
         $base64Signature = $this->base64UrlEncode($hash);
 
@@ -562,7 +567,7 @@ class Robokassa
 
             return $response->getBody()->getContents();
 
-        } catch (ClientException $e) {
+        } catch (RequestException $e) {
             $resp    = $e->getResponse();
             $content = $resp ? $resp->getBody()->getContents() : $e->getMessage();
             throw new \Exception('Ошибка при отправке второго чека: ' . $content);
@@ -570,6 +575,56 @@ class Robokassa
         } catch (\Exception $e) {
             throw new \Exception('Ошибка при отправке второго чека: ' . $e->getMessage());
 
+        }
+    }
+
+    /**
+     * Получение статуса чека
+     *
+     * @param array $payload
+     * @return array
+     * @throws Exception
+     */
+    public function getCheckStatus(array $payload): array
+    {
+        if (empty($payload['merchantId']) || empty($payload['id'])) {
+            throw new Exception('Не указаны обязательные параметры: merchantId и id (InvId).');
+        }
+
+        $json = json_encode($payload, JSON_UNESCAPED_UNICODE);
+        if ($json === false) {
+            throw new Exception("Ошибка кодирования JSON");
+        }
+
+
+        $base64Payload = $this->base64UrlEncode($json);
+
+        $hashString = $base64Payload . $this->password1;
+
+        $hash = $this->generateHash($hashString);
+
+        $base64Signature = $this->base64UrlEncode($hash);
+
+        $body = $base64Payload . '.' . $base64Signature;
+
+        try {
+            $response = $this->httpClient->post(self::CHECK_STATUS_URL, [
+                'body'    => $body,
+                'headers' => ['Content-Type' => 'application/json; charset=utf-8'],
+            ]);
+
+            $raw  = $response->getBody()->getContents();
+            $data = json_decode($raw, true);
+
+            if ($data === null) {
+                throw new Exception('Некорректный JSON в ответе: ' . $raw);
+            }
+            return $data;
+
+        } catch (RequestException $e) {
+            $resp    = $e->getResponse();
+            $content = $resp ? $resp->getBody()->getContents() : $e->getMessage();
+            throw new Exception('Ошибка при запросе статуса чека: ' . $content);
         }
     }
 }
