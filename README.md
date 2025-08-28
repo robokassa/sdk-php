@@ -13,14 +13,15 @@ composer require robokassa/sdk-php
 
 ## 🚀 Доступные методы
 
-| Метод                                           | Описание                                                             | Документация                                                                                |
-| ----------------------------------------------- | -------------------------------------------------------------------- | ------------------------------------------------------------------------------------------- |
-| `sendPaymentRequestJwt(array $params): string`  | ✅ Рекомендуемый способ. Создаёт ссылку на оплату через JWT-интерфейс | [docs.robokassa.ru/pay-interface/#jwt](https://docs.robokassa.ru/pay-interface/#jwt)        |
-| `sendPaymentRequestCurl(array $params): string` | Создаёт ссылку на оплату через стандартный интерфейс                 | —                                                                                           |
-| `getPaymentMethods(string $lang = 'ru'): array` | Получает список доступных методов оплаты                             | [docs.robokassa.ru/xml-interfaces/#currency](https://docs.robokassa.ru/xml-interfaces/#currency) |
-| `opState(int $invoiceID): array`                | Получает статус оплаты по `InvoiceID`                                | [docs.robokassa.ru/xml-interfaces/#account](https://docs.robokassa.ru/xml-interfaces/#account) |
-| `getSecondCheckUrl(array $payload): string`     | Формирует JSON‑payload и вычисляет цифровую подпись для отправки второго чека | [docs.robokassa.ru/second-check/#formation](https://docs.robokassa.ru/second-check/#formation) |
-| `sendSecondCheck(array $payload): string`       | Отправляет запрос на формирование второго чека и возвращает ответ    | [docs.robokassa.ru/second-check/#request](https://docs.robokassa.ru/second-check/#request) |
+| Метод                                           | Описание                                                                      | Документация                                                                                |
+|-------------------------------------------------|-------------------------------------------------------------------------------| ------------------------------------------------------------------------------------------- |
+| `sendPaymentRequestJwt(array $params): string`  | ✅ Рекомендуемый способ. Создаёт ссылку на оплату через JWT-интерфейс          | [docs.robokassa.ru/pay-interface/#jwt](https://docs.robokassa.ru/pay-interface/#jwt)        |
+| `sendPaymentRequestCurl(array $params): string` | Создаёт ссылку на оплату через стандартный интерфейс                          | —                                                                                           |
+| `getPaymentMethods(string $lang = 'ru'): array` | Получает список доступных методов оплаты                                      | [docs.robokassa.ru/xml-interfaces/#currency](https://docs.robokassa.ru/xml-interfaces/#currency) |
+| `opState(int $invoiceID): array`                | Получает статус оплаты по `InvoiceID`                                         | [docs.robokassa.ru/xml-interfaces/#account](https://docs.robokassa.ru/xml-interfaces/#account) |
+| `getSecondCheckUrl(array $payload)`             | Формирует JSON‑payload и вычисляет цифровую подпись для отправки второго чека | [docs.robokassa.ru/second-check/#formation](https://docs.robokassa.ru/second-check/#formation) |
+| `sendSecondCheck(array $payload): array`        | Отправляет запрос на формирование второго чека и возвращает ответ             | [docs.robokassa.ru/second-check/#request](https://docs.robokassa.ru/second-check/#request) |
+| `getCheckStatus(array $payload): array`         | Отправляет запрос на получение статуса фискального чека                       | [docs.robokassa.ru/second-check/#status](https://docs.robokassa.ru/second-check/#status) |
 
 ## 📂 Примеры использования
 
@@ -31,6 +32,7 @@ composer require robokassa/sdk-php
 * [`getPaymentMethods.php`](./examples/get_payment_methods.php) — получение доступных способов оплаты
 * [`opState.php`](./examples/get_invoice_status.php) — проверка статуса счёта
 * [`sendSecondCheck.php`](./examples/send_second_check.php) — отправка второго чека
+* [`getCheckStatus.php`](./examples/get_check_status.php) — проверка статуса чека
 
 ## 📌 Дополнительно
 
