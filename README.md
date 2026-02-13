@@ -15,7 +15,7 @@ composer require robokassa/sdk-php
 
 | Метод                                           | Описание                                                                      | Документация                                                                                |
 |-------------------------------------------------|-------------------------------------------------------------------------------| ------------------------------------------------------------------------------------------- |
-| `payment()->sendJwt(array $params): string`  | ✅ Рекомендуемый способ. Создаёт ссылку на оплату через JWT-интерфейс          | [docs.robokassa.ru/pay-interface/#jwt](https://docs.robokassa.ru/pay-interface/#jwt)        |
+| `payment()->sendJwt(array $params): string`  | ✅ Рекомендуемый способ. Создаёт ссылку на оплату через JWT-интерфейс          | [docs.robokassa.ru/ru/invoice-api](https://docs.robokassa.ru/ru/invoice-api)        |
 | `payment()->sendCurl(array $params): string` | Создаёт ссылку на оплату через стандартный интерфейс                          | —                                                                                           |
 | `webService()->getPaymentMethods(string $lang = 'ru'): array` | Получает список доступных методов оплаты                                      | [docs.robokassa.ru/xml-interfaces/#currency](https://docs.robokassa.ru/xml-interfaces/#currency) |
 | `webService()->opState(int $invoiceID): array`                | Получает статус оплаты по `InvoiceID`                                         | [docs.robokassa.ru/xml-interfaces/#account](https://docs.robokassa.ru/xml-interfaces/#account) |
