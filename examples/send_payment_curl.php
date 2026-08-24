@@ -4,6 +4,8 @@ require_once __DIR__ . '/bootstrap.php';
 
 /**
  * Пример использования метода payment()->sendCurl()
+ *
+ * @deprecated Метод будет удалён в следующей major версии. Используйте payment()->sendJwt().
  * Создаёт платёжную ссылку через обычный POST-запрос (не JWT)
  */
 

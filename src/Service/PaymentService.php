@@ -2,6 +2,7 @@
 namespace Robokassa\Service;
 
 use Robokassa\Client\HttpClientInterface;
+use Robokassa\Client\Response;
 use Robokassa\Exception\RobokassaException;
 use Robokassa\Signature\SignatureService;
 
@@ -16,7 +17,17 @@ class PaymentService {
 	private string $jwtApiUrl;
 	private string $hashType;
 
-	public function __construct(HttpClientInterface $http, SignatureService $sign, string $login, string $password1, bool $isTest, string $paymentUrl, string $paymentCurl, string $jwtApiUrl, string $hashType) {
+	public function __construct(
+		HttpClientInterface $http,
+		SignatureService $sign,
+		string $login,
+		string $password1,
+		bool $isTest,
+		string $paymentUrl,
+		string $paymentCurl,
+		string $jwtApiUrl,
+		string $hashType
+	) {
 		$this->http = $http;
 		$this->sign = $sign;
 		$this->merchantLogin = $login;
@@ -29,7 +40,9 @@ class PaymentService {
 	}
 
 	/**
-	 * Отправка платёжного запроса через CURL (Indexjson.aspx)
+	 * Отправка платёжного запроса через CURL (Indexjson.aspx).
+	 *
+	 * @deprecated будет удалён в следующей major версии. Используйте sendJwt().
 	 * @param array $params
 	 * @return string
 	 * @throws RobokassaException
@@ -46,18 +59,41 @@ class PaymentService {
 		$resp = $this->http->post($this->paymentCurl, http_build_query($params), array(
 			'Content-Type' => 'application/x-www-form-urlencoded',
 		));
-		if ($resp->status === 200) {
-			$data = json_decode($resp->body, true);
-			if (!empty($data['invoiceID'])) {
-				return $this->paymentUrl . $data['invoiceID'];
-			}
-			throw new RobokassaException('Invoice ID not found in response.');
+		$this->assertSuccessStatus($resp, 'Failed to send payment request.');
+		$data = $this->decodeJsonResponse($resp->body);
+		if (!empty($data['invoiceID'])) {
+			return $this->paymentUrl . $data['invoiceID'];
 		}
-		throw new RobokassaException('Failed to send payment request. HTTP Status: ' . $resp->status);
+		throw new RobokassaException('Invoice ID not found in response.');
 	}
 
 	/**
-	 * Подготовка параметров для CURL-запроса
+	 * Создание счёта через JWT интерфейс.
+	 *
+	 * @param array $params
+	 * @return string
+	 * @throws RobokassaException
+	 */
+	public function sendJwt(array $params): string {
+		$payload = $this->buildJwtPayload($params);
+		list(, , $toSign) = $this->sign->encodeJwtParts(array('alg' => 'MD5', 'typ' => 'JWT'), $payload);
+		$jwt = $toSign . '.' . $this->sign->jwtSignMd5($toSign, $this->merchantLogin, $this->password1);
+		$resp = $this->http->post(
+			$this->jwtApiUrl,
+			$this->encodeJson($jwt),
+			array('Content-Type' => 'application/json')
+		);
+		$this->assertSuccessStatus($resp, 'JWT request failed.');
+		$data = $this->decodeJsonResponse($resp->body);
+		if (!empty($data['url'])) {
+			return $data['url'];
+		}
+		throw new RobokassaException('JWT response does not contain payment URL.');
+	}
+
+	/**
+	 * Подготовка параметров для CURL-запроса.
+	 *
 	 * @param array $params
 	 * @return array
 	 * @throws RobokassaException
@@ -68,9 +104,81 @@ class PaymentService {
 		}
 		$params['MerchantLogin'] = $this->merchantLogin;
 		if (!empty($params['Receipt'])) {
-			$encoded = urlencode(json_encode($params['Receipt']));
+			$encoded = urlencode($this->encodeJson($params['Receipt']));
 			$params['Receipt'] = urlencode($encoded);
 		}
+		return $this->encodeShpParams($params);
+	}
+
+	/**
+	 * Формирование массива для подписи.
+	 *
+	 * @param array $params
+	 * @return array
+	 */
+	private function buildCurlSignature(array $params): array {
+		$sig = array('OutSum' => $params['OutSum'], 'InvoiceID' => $params['InvoiceID'] ?? '');
+		if (!empty($params['Receipt'])) {
+			$sig['Receipt'] = urldecode($params['Receipt']);
+		}
+		return $this->appendShpParams($sig, $params);
+	}
+
+	/**
+	 * Подготовка payload для JWT.
+	 *
+	 * @param array $params
+	 * @return array
+	 * @throws RobokassaException
+	 */
+	private function buildJwtPayload(array $params): array {
+		if (empty($params['OutSum']) || !isset($params['InvId'])) {
+			throw new RobokassaException('Required parameters: OutSum, InvId');
+		}
+		$payload = $this->buildRequiredJwtPayload($params);
+		return $this->appendOptionalJwtPayload($payload, $params);
+	}
+
+	/**
+	 * Собирает обязательные поля JWT payload.
+	 *
+	 * @param array $params
+	 * @return array
+	 */
+	private function buildRequiredJwtPayload(array $params): array {
+		return array(
+			'MerchantLogin' => $this->merchantLogin,
+			'InvoiceType' => $params['InvoiceType'] ?? 'OneTime',
+			'Culture' => $params['Culture'] ?? 'ru',
+			'InvId' => (int)$params['InvId'],
+			'OutSum' => (float)$params['OutSum'],
+		);
+	}
+
+	/**
+	 * Добавляет опциональные поля JWT payload.
+	 *
+	 * @param array $payload
+	 * @param array $params
+	 * @return array
+	 */
+	private function appendOptionalJwtPayload(array $payload, array $params): array {
+		$optional = array('Description','MerchantComments','InvoiceItems','UserFields','SuccessUrl2Data','FailUrl2Data');
+		foreach ($optional as $key) {
+			if (!empty($params[$key])) {
+				$payload[$key] = $params[$key];
+			}
+		}
+		return $payload;
+	}
+
+	/**
+	 * Кодирует параметры Shp_* и добавляет тестовый режим.
+	 *
+	 * @param array $params
+	 * @return array
+	 */
+	private function encodeShpParams(array $params): array {
 		if ($this->isTest) {
 			$params['IsTest'] = '1';
 		}
@@ -83,18 +191,13 @@ class PaymentService {
 	}
 
 	/**
-	 * Формирование массива для подписи
+	 * Добавляет параметры Shp_* в массив подписи.
+	 *
+	 * @param array $sig
 	 * @param array $params
 	 * @return array
 	 */
-	private function buildCurlSignature(array $params): array {
-		$sig = array(
-			'OutSum'	=> $params['OutSum'],
-			'InvoiceID' => $params['InvoiceID'] ?? '',
-		);
-		if (!empty($params['Receipt'])) {
-			$sig['Receipt'] = urldecode($params['Receipt']);
-		}
+	private function appendShpParams(array $sig, array $params): array {
 		foreach ($params as $name => $value) {
 			if (preg_match('~^Shp_~iu', $name)) {
 				$sig[$name] = $value;
@@ -104,47 +207,53 @@ class PaymentService {
 	}
 
 	/**
-	 * Создание счёта через JWT интерфейс
-	 * @param array $params
-	 * @return string
+	 * Проверяет успешный HTTP-статус.
+	 *
+	 * @param Response $response
+	 * @param string $message
+	 * @return void
 	 * @throws RobokassaException
 	 */
-	public function sendJwt(array $params): string {
-		$payload = $this->buildJwtPayload($params);
-		[$eh, $ep, $toSign] = $this->sign->encodeJwtParts(array('alg' => 'MD5', 'typ' => 'JWT'), $payload);
-		$sig = $this->sign->jwtSignMd5($toSign, $this->merchantLogin, $this->password1);
-		$jwt = $toSign . '.' . $sig;
-		$resp = $this->http->post($this->jwtApiUrl, json_encode($jwt), array('Content-Type' => 'application/json'));
-		$data = json_decode($resp->body, true);
-		if (!empty($data['url'])) {
-			return $data['url'];
+	private function assertSuccessStatus(Response $response, string $message): void {
+		if ($response->status !== 200) {
+			throw new RobokassaException($message . ' HTTP Status: ' . $response->status);
 		}
-		throw new RobokassaException('JWT request failed: ' . $resp->body);
 	}
 
 	/**
-	 * Подготовка payload для JWT
-	 * @param array $params
+	 * Кодирует данные в JSON с проверкой ошибки.
+	 *
+	 * @param mixed $data
+	 * @param int $flags
+	 * @return string
+	 * @throws RobokassaException
+	 */
+	private function encodeJson($data, int $flags = 0): string {
+		$json = json_encode($data, $flags);
+		if ($json === false) {
+			throw new RobokassaException('Ошибка кодирования JSON: ' . json_last_error_msg());
+		}
+		return $json;
+	}
+
+	/**
+	 * Разбирает JSON-ответ с проверкой пустого и невалидного тела.
+	 *
+	 * @param string $body
 	 * @return array
 	 * @throws RobokassaException
 	 */
-	private function buildJwtPayload(array $params): array {
-		if (empty($params['OutSum']) || !isset($params['InvId'])) {
-			throw new RobokassaException('Required parameters: OutSum, InvId');
+	private function decodeJsonResponse(string $body): array {
+		if (trim($body) === '') {
+			throw new RobokassaException('Пустой JSON-ответ');
 		}
-		$payload = array(
-			'MerchantLogin' => $this->merchantLogin,
-			'InvoiceType'	=> $params['InvoiceType'] ?? 'OneTime',
-			'Culture'		=> $params['Culture'] ?? 'ru',
-			'InvId'			=> (int)$params['InvId'],
-			'OutSum'		=> (float)$params['OutSum'],
-		);
-		$optional = array('Description','MerchantComments','InvoiceItems','UserFields','SuccessUrl2Data','FailUrl2Data');
-		foreach ($optional as $key) {
-			if (!empty($params[$key])) {
-				$payload[$key] = $params[$key];
-			}
+		$data = json_decode($body, true);
+		if (json_last_error() !== JSON_ERROR_NONE) {
+			throw new RobokassaException('Некорректный JSON в ответе: ' . json_last_error_msg());
 		}
-		return $payload;
+		if (!is_array($data)) {
+			throw new RobokassaException('JSON-ответ должен быть объектом или массивом');
+		}
+		return $data;
 	}
 }

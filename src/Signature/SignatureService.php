@@ -1,15 +1,23 @@
 <?php
 namespace Robokassa\Signature;
 
-class SignatureService {
-	/** @var string[] */
-	private static $ALLOWED = array('md5','sha256','sha512');
+use Robokassa\Exception\RobokassaException;
 
+class SignatureService {
 	/** @var string */
 	private $defaultAlgo;
 
-	public function __construct($defaultAlgo = 'md5') {
-		$this->defaultAlgo = $defaultAlgo;
+	/** @var HashAlgorithmResolver */
+	private $algorithmResolver;
+
+	/**
+	 * @param string $defaultAlgo
+	 * @param HashAlgorithmResolver|null $algorithmResolver
+	 * @throws RobokassaException
+	 */
+	public function __construct($defaultAlgo = 'md5', ?HashAlgorithmResolver $algorithmResolver = null) {
+		$this->algorithmResolver = $algorithmResolver ?: new HashAlgorithmResolver($defaultAlgo);
+		$this->defaultAlgo = $this->algorithmResolver->resolve($defaultAlgo);
 	}
 
 	/** Base64URL без паддинга */
@@ -25,12 +33,10 @@ class SignatureService {
 	 * @param string      $secret
 	 * @param string|null $algo
 	 * @return string
+	 * @throws RobokassaException
 	 */
 	public function signFiscal($base64Payload, $secret, $algo = null) {
-		$algo = strtolower($algo ? $algo : $this->defaultAlgo);
-		if (!in_array($algo, self::$ALLOWED, true)) {
-			$algo = 'md5';
-		}
+		$algo = $this->resolveAlgorithm($algo);
 		$hashHex = hash($algo, $base64Payload . $secret, false);
 		return $this->b64url($hashHex);
 	}
@@ -55,10 +61,11 @@ class SignatureService {
 	 * @param array $header
 	 * @param array $payload
 	 * @return array{0:string,1:string,2:string}
+	 * @throws RobokassaException
 	 */
 	public function encodeJwtParts(array $header, array $payload) {
-		$encHeader  = $this->b64url(json_encode($header,  JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
-		$encPayload = $this->b64url(json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
+		$encHeader = $this->b64url($this->encodeJson($header));
+		$encPayload = $this->b64url($this->encodeJson($payload));
 		return array($encHeader, $encPayload, $encHeader . '.' . $encPayload);
 	}
 
@@ -73,19 +80,57 @@ class SignatureService {
 	 * @param array       $params     Должны содержать OutSum, InvoiceID, опционально Receipt и Shp_* поля
 	 * @param string      $login
 	 * @param string      $password1
-	 * @param string|null $algo       md5|sha256|sha512 (иначе md5)
+	 * @param string|null $algo       md5|ripemd160|sha1|sha256|sha384|sha512
 	 * @return string                 HEX-хеш
+	 * @throws RobokassaException
 	 */
 	public function createPaymentSignature(array $params, $login, $password1, $algo = null) {
-		$required = array($login, $params['OutSum'], $params['InvoiceID']);
+		$hashString = $this->buildPaymentHashString($params, $login, $password1);
+		return hash($this->resolveAlgorithm($algo), $hashString);
+	}
 
+	/**
+	 * Собирает строку для подписи платёжного запроса.
+	 *
+	 * @param array $params
+	 * @param string $login
+	 * @param string $password1
+	 * @return string
+	 */
+	private function buildPaymentHashString(array $params, $login, $password1): string {
+		$required = $this->buildPaymentRequiredParts($params, $login, $password1);
+		$pairs = $this->collectShpPairs($params);
+		$hashString = implode(':', $required);
+		if (!empty($pairs)) {
+			$hashString .= ':' . implode(':', $pairs);
+		}
+		return $hashString;
+	}
+
+	/**
+	 * Собирает обязательные части строки подписи.
+	 *
+	 * @param array $params
+	 * @param string $login
+	 * @param string $password1
+	 * @return array
+	 */
+	private function buildPaymentRequiredParts(array $params, $login, $password1): array {
+		$required = array($login, $params['OutSum'], $params['InvoiceID']);
 		if (!empty($params['Receipt'])) {
 			$required[] = $params['Receipt'];
 		}
-
 		$required[] = $password1;
+		return $required;
+	}
 
-		// собрать пары Shp_* в виде key=value и отсортировать
+	/**
+	 * Собирает отсортированные пользовательские параметры Shp_*.
+	 *
+	 * @param array $params
+	 * @return array
+	 */
+	private function collectShpPairs(array $params): array {
 		$pairs = array();
 		foreach ($params as $k => $v) {
 			if (preg_match('~^Shp_~iu', $k)) {
@@ -93,18 +138,7 @@ class SignatureService {
 			}
 		}
 		sort($pairs);
-
-		$hashString = implode(':', $required);
-		if (!empty($pairs)) {
-			$hashString .= ':' . implode(':', $pairs);
-		}
-
-		$algo = strtolower($algo ? $algo : $this->defaultAlgo);
-		if (!in_array($algo, self::$ALLOWED, true)) {
-			$algo = 'md5';
-		}
-
-		return hash($algo, $hashString);
+		return $pairs;
 	}
 
 	/**
@@ -116,15 +150,38 @@ class SignatureService {
 	 * @param string      $login
 	 * @param string      $invoiceID
 	 * @param string      $password2
-	 * @param string|null $algo       md5|sha256|sha512 (иначе md5)
+	 * @param string|null $algo       md5|ripemd160|sha1|sha256|sha384|sha512
 	 * @return string                 HEX-хеш
+	 * @throws RobokassaException
 	 */
 	public function signOpState($login, $invoiceID, $password2, $algo = null) {
-		$algo = strtolower($algo ? $algo : $this->defaultAlgo);
-		if (!in_array($algo, self::$ALLOWED, true)) {
-			$algo = 'md5';
-		}
-
+		$algo = $this->resolveAlgorithm($algo);
 		return hash($algo, $login . ':' . $invoiceID . ':' . $password2);
+	}
+
+	/**
+	 * Выбирает алгоритм подписи.
+	 *
+	 * @param string|null $algo
+	 * @return string
+	 * @throws RobokassaException
+	 */
+	private function resolveAlgorithm($algo = null): string {
+		return $this->algorithmResolver->resolve($algo === null ? $this->defaultAlgo : $algo);
+	}
+
+	/**
+	 * Кодирует данные в JSON для JWT.
+	 *
+	 * @param array $data
+	 * @return string
+	 * @throws RobokassaException
+	 */
+	private function encodeJson(array $data): string {
+		$json = json_encode($data, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+		if ($json === false) {
+			throw new RobokassaException('Ошибка кодирования JSON: ' . json_last_error_msg());
+		}
+		return $json;
 	}
 }

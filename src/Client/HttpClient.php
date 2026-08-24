@@ -2,25 +2,9 @@
 namespace Robokassa\Client;
 
 use GuzzleHttp\Client;
+use GuzzleHttp\Exception\GuzzleException;
 use GuzzleHttp\Exception\RequestException;
-
-final class Response {
-	/** @var string */
-	public $body;
-
-	/** @var int */
-	public $status;
-
-	public function __construct(string $body, int $status) {
-		$this->body   = $body;
-		$this->status = $status;
-	}
-}
-
-interface HttpClientInterface {
-	public function get(string $url, array $headers = []): Response;
-	public function post(string $url, string $body, array $headers = []): Response;
-}
+use Robokassa\Exception\RobokassaException;
 
 final class HttpClient implements HttpClientInterface {
 	/** @var Client */
@@ -31,29 +15,46 @@ final class HttpClient implements HttpClientInterface {
 	}
 
 	public function get(string $url, array $headers = []): Response {
-		try {
-			$r = $this->client->get($url, ['headers' => $headers]);
-			return new Response((string)$r->getBody(), $r->getStatusCode());
-		} catch (RequestException $e) {
-			$resp = $e->getResponse();
-			$msg  = $resp ? (string)$resp->getBody() : $e->getMessage();
-
-			throw new \Exception('Ошибка HTTP GET: ' . $msg, 0, $e);
-		}
+		return $this->request('get', $url, null, $headers);
 	}
 
 	public function post(string $url, string $body, array $headers = []): Response {
+		return $this->request('post', $url, $body, $headers);
+	}
+
+	/**
+	 * Выполняет HTTP-запрос и заворачивает сетевые ошибки в исключение SDK.
+	 *
+	 * @param string $method
+	 * @param string $url
+	 * @param string|null $body
+	 * @param array $headers
+	 * @return Response
+	 * @throws RobokassaException
+	 */
+	private function request(string $method, string $url, ?string $body, array $headers): Response {
+		$options = array(
+			'headers' => $headers,
+		);
+		if ($body !== null) {
+			$options['body'] = $body;
+		}
+
 		try {
-			$r = $this->client->post($url, [
-				'body'    => $body,
-				'headers' => $headers,
-			]);
+			$r = $this->client->{$method}($url, $options);
 			return new Response((string)$r->getBody(), $r->getStatusCode());
 		} catch (RequestException $e) {
-			$resp = $e->getResponse();
-			$msg  = $resp ? (string)$resp->getBody() : $e->getMessage();
-
-			throw new \Exception('Ошибка HTTP POST: ' . $msg, 0, $e);
+			$response = $e->getResponse();
+			if ($response !== null) {
+				throw new RobokassaException(
+					'Ошибка HTTP ' . strtoupper($method) . ': HTTP Status: ' . $response->getStatusCode(),
+					0,
+					$e
+				);
+			}
+			throw new RobokassaException('Сетевая ошибка HTTP ' . strtoupper($method), 0, $e);
+		} catch (GuzzleException $e) {
+			throw new RobokassaException('Сетевая ошибка HTTP ' . strtoupper($method), 0, $e);
 		}
 	}
 }
