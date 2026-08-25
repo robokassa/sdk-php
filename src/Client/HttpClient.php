@@ -47,14 +47,12 @@ final class HttpClient implements HttpClientInterface {
 			$response = $e->getResponse();
 			if ($response !== null) {
 				throw new RobokassaException(
-					'Ошибка HTTP ' . strtoupper($method) . ': HTTP Status: ' . $response->getStatusCode(),
-					0,
-					$e
+					'Ошибка HTTP ' . strtoupper($method) . ': HTTP Status: ' . $response->getStatusCode()
 				);
 			}
-			throw new RobokassaException('Сетевая ошибка HTTP ' . strtoupper($method), 0, $e);
+			throw new RobokassaException('Сетевая ошибка HTTP ' . strtoupper($method));
 		} catch (GuzzleException $e) {
-			throw new RobokassaException('Сетевая ошибка HTTP ' . strtoupper($method), 0, $e);
+			throw new RobokassaException('Сетевая ошибка HTTP ' . strtoupper($method));
 		}
 	}
 }

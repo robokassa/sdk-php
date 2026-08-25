@@ -182,6 +182,17 @@ class ExamplesTest extends TestCase {
 		$this->assertSame(array('items' => array()), $res);
 	}
 
+	public function testStatusServicePublicContractKeepsOldNativeTypes(): void {
+		$constructor = new \ReflectionMethod(StatusService::class, '__construct');
+		$params = $constructor->getParameters();
+		$method = new \ReflectionMethod(StatusService::class, 'getInvoiceInformationList');
+
+		$this->assertFalse($params[0]->hasType());
+		$this->assertFalse($params[1]->hasType());
+		$this->assertFalse($params[2]->hasType());
+		$this->assertNull($method->getReturnType());
+	}
+
 	public function testBadHttpStatusThrowsBeforeJsonParsing(): void {
 		$this->http->queueResponse(new Response('secret-signature-body', 500));
 
@@ -205,8 +216,12 @@ class ExamplesTest extends TestCase {
 			$this->fail('Ожидалось исключение RobokassaException');
 		} catch (RobokassaException $e) {
 			$this->assertSame('Сетевая ошибка HTTP GET', $e->getMessage());
-			$this->assertStringNotContainsString('secret-signature-network-error', $e->getMessage());
-			$this->assertInstanceOf(ConnectException::class, $e->getPrevious());
+			$this->assertNull($e->getPrevious());
+			$this->assertExceptionChainDoesNotContain($e, array(
+				'secret-signature-network-error',
+				'signature',
+				'https://example.test',
+			));
 		}
 	}
 
@@ -221,7 +236,12 @@ class ExamplesTest extends TestCase {
 			$this->fail('Ожидалось исключение RobokassaException');
 		} catch (RobokassaException $e) {
 			$this->assertStringContainsString('HTTP Status: 500', $e->getMessage());
-			$this->assertStringNotContainsString('secret-signature-body', $e->getMessage());
+			$this->assertNull($e->getPrevious());
+			$this->assertExceptionChainDoesNotContain($e, array(
+				'secret-signature-body',
+				'signature',
+				'https://example.test',
+			));
 		}
 	}
 
@@ -281,6 +301,15 @@ class ExamplesTest extends TestCase {
 			'DateTo' => '2024-01-02',
 			'InvoiceTypes' => array('onetime'),
 		);
+	}
+
+	private function assertExceptionChainDoesNotContain(\Throwable $exception, array $needles): void {
+		do {
+			foreach ($needles as $needle) {
+				$this->assertStringNotContainsString($needle, $exception->getMessage());
+			}
+			$exception = $exception->getPrevious();
+		} while ($exception !== null);
 	}
 }
 

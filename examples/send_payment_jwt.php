@@ -12,7 +12,7 @@ try {
 
 	$params = [
 		'InvId' => 133765623,
-		'OutSum' => 1,
+		'OutSum' => 10,
 		'Description' => 'Оплата тестового заказа',
 		'MerchantComments' => 'Без комментариев',
 		'InvoiceType' => 'Reusable',

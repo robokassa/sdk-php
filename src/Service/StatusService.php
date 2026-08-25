@@ -22,16 +22,18 @@ class StatusService {
 	 * @param string $merchantLogin
 	 * @param string $password1
 	 * @param SignatureService|null $sign
+	 * @throws RobokassaException
 	 */
-	public function __construct(
-		HttpClientInterface $http,
-		string $merchantLogin,
-		string $password1,
-		?SignatureService $sign = null
-	) {
+	public function __construct($http, $merchantLogin, $password1, $sign = null) {
+		if (!$http instanceof HttpClientInterface) {
+			throw new RobokassaException('Param http must implement HttpClientInterface');
+		}
+		if ($sign !== null && !$sign instanceof SignatureService) {
+			throw new RobokassaException('Param sign must be instance of SignatureService');
+		}
 		$this->http = $http;
-		$this->merchantLogin = $merchantLogin;
-		$this->password1 = $password1;
+		$this->merchantLogin = (string)$merchantLogin;
+		$this->password1 = (string)$password1;
 		$this->sign = $sign ?: new SignatureService('md5');
 	}
 
@@ -44,7 +46,7 @@ class StatusService {
 	 * @return array
 	 * @throws RobokassaException
 	 */
-	public function getInvoiceInformationList(array $filters): array {
+	public function getInvoiceInformationList(array $filters) {
 		$this->assertRequiredFilters($filters);
 		$filters = $this->normalizeFilters($filters);
 		$jwt = $this->buildJwt($filters);
