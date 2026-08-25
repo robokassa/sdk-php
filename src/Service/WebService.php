@@ -2,6 +2,7 @@
 namespace Robokassa\Service;
 
 use Robokassa\Client\HttpClientInterface;
+use Robokassa\Client\Response;
 use Robokassa\Exception\RobokassaException;
 use Robokassa\Signature\SignatureService;
 
@@ -49,9 +50,7 @@ class WebService {
 			'Language' => $lang,
 		]);
 		$resp = $this->http->get($this->buildUrl('GetPaymentMethods', $query));
-		if ($resp->status !== 200) {
-			throw new RobokassaException('Ошибка запроса: HTTP ' . $resp->status);
-		}
+		$this->assertSuccessStatus($resp);
 		return $this->xmlToArray($resp->body);
 	}
 
@@ -74,9 +73,7 @@ class WebService {
 			),
 		]);
 		$resp = $this->http->get($this->buildUrl('OpStateExt', $query));
-		if ($resp->status !== 200) {
-			throw new RobokassaException('Ошибка запроса: HTTP ' . $resp->status);
-		}
+		$this->assertSuccessStatus($resp);
 		return $this->xmlToArray($resp->body);
 	}
 
@@ -84,8 +81,56 @@ class WebService {
 		return $this->url . '/' . $segment . '?' . $query;
 	}
 
+	/**
+	 * Проверяет успешный HTTP-статус XML-запроса.
+	 *
+	 * @param Response $response
+	 * @return void
+	 * @throws RobokassaException
+	 */
+	private function assertSuccessStatus(Response $response): void {
+		if ($response->status !== 200) {
+			throw new RobokassaException('Ошибка запроса: HTTP ' . $response->status);
+		}
+	}
+
+	/**
+	 * Преобразует XML-ответ в массив без PHP warning.
+	 *
+	 * @param string $xml
+	 * @return array
+	 * @throws RobokassaException
+	 */
 	private function xmlToArray(string $xml): array {
+		if (trim($xml) === '') {
+			throw new RobokassaException('Пустой XML-ответ');
+		}
+		$previous = libxml_use_internal_errors(true);
 		$res = simplexml_load_string($xml);
-		return json_decode(json_encode((array)$res, JSON_NUMERIC_CHECK), true);
+		libxml_clear_errors();
+		libxml_use_internal_errors($previous);
+		if ($res === false) {
+			throw new RobokassaException('Некорректный XML в ответе');
+		}
+		return $this->simpleXmlToArray($res);
+	}
+
+	/**
+	 * Преобразует SimpleXML в массив без числовой конвертации строк.
+	 *
+	 * @param \SimpleXMLElement $xml
+	 * @return array
+	 * @throws RobokassaException
+	 */
+	private function simpleXmlToArray(\SimpleXMLElement $xml): array {
+		$json = json_encode((array)$xml);
+		if ($json === false) {
+			throw new RobokassaException('Ошибка кодирования XML в JSON: ' . json_last_error_msg());
+		}
+		$data = json_decode($json, true);
+		if (json_last_error() !== JSON_ERROR_NONE || !is_array($data)) {
+			throw new RobokassaException('Некорректный JSON после преобразования XML');
+		}
+		return $data;
 	}
 }

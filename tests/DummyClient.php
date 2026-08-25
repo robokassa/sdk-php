@@ -1,19 +1,16 @@
 <?php
 namespace Robokassa\Tests;
 
-use Robokassa\Client\HttpClient;
 use Robokassa\Client\HttpClientInterface;
 use Robokassa\Client\Response;
 
-// Подгрузка файла HttpClient с описанием интерфейса
-class_exists(HttpClient::class);
-
 /**
-	* Заглушка HTTP-клиента для тестов
-	*/
+ * Заглушка HTTP-клиента для тестов.
+ */
 class DummyClient implements HttpClientInterface {
-	/** @var Response[] */
+	/** @var array<int, Response|\Throwable> */
 	private array $responses = [];
+
 	public string $lastUrl = '';
 	public string $lastBody = '';
 	public array $lastHeaders = [];
@@ -26,12 +23,19 @@ class DummyClient implements HttpClientInterface {
 	}
 
 	/**
+	 * Добавить исключение в очередь.
+	 */
+	public function queueException(\Throwable $exception): void {
+		$this->responses[] = $exception;
+	}
+
+	/**
 	 * Имитация запроса GET
 	 */
 	public function get(string $url, array $headers = []): Response {
 		$this->lastUrl = $url;
 		$this->lastHeaders = $headers;
-		return array_shift($this->responses);
+		return $this->nextResponse();
 	}
 
 	/**
@@ -41,6 +45,17 @@ class DummyClient implements HttpClientInterface {
 		$this->lastUrl = $url;
 		$this->lastBody = $body;
 		$this->lastHeaders = $headers;
-		return array_shift($this->responses);
+		return $this->nextResponse();
+	}
+
+	private function nextResponse(): Response {
+		$response = array_shift($this->responses);
+		if ($response instanceof \Throwable) {
+			throw $response;
+		}
+		if (!$response instanceof Response) {
+			throw new \RuntimeException('Не задан ответ HTTP-заглушки');
+		}
+		return $response;
 	}
 }

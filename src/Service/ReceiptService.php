@@ -2,6 +2,7 @@
 namespace Robokassa\Service;
 
 use Robokassa\Client\HttpClientInterface;
+use Robokassa\Client\Response;
 use Robokassa\Exception\RobokassaException;
 use Robokassa\Signature\SignatureService;
 
@@ -28,10 +29,7 @@ class ReceiptService {
 	 * @throws RobokassaException
 	 */
 	public function getSecondCheckUrl(array $payload): string {
-		$json = json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
-		if ($json === false) {
-			throw new RobokassaException('Ошибка кодирования JSON');
-		}
+		$json = $this->encodeJson($payload, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
 		$base64Payload = $this->sign->b64url($json);
 		$base64Signature = $this->sign->signFiscal($base64Payload, $this->password1, $this->hashType);
 		return $base64Payload . '.' . $base64Signature;
@@ -46,6 +44,7 @@ class ReceiptService {
 	public function sendSecondCheck(array $payload): string {
 		$body = $this->getSecondCheckUrl($payload);
 		$resp = $this->http->post(self::SECOND_CHECK_URL, $body, array('Content-Type' => 'application/json'));
+		$this->assertSuccessStatus($resp, 'Ошибка отправки второго чека.');
 		return $resp->body;
 	}
 
@@ -59,17 +58,62 @@ class ReceiptService {
 		if (empty($payload['merchantId']) || empty($payload['id'])) {
 			throw new RobokassaException('Не указаны обязательные параметры: merchantId и id (InvId).');
 		}
-		$json = json_encode($payload, JSON_UNESCAPED_UNICODE);
-		if ($json === false) {
-			throw new RobokassaException('Ошибка кодирования JSON');
-		}
+		$json = $this->encodeJson($payload, JSON_UNESCAPED_UNICODE);
 		$base64Payload = $this->sign->b64url($json);
 		$base64Signature = $this->sign->signFiscal($base64Payload, $this->password1, $this->hashType);
 		$body = $base64Payload . '.' . $base64Signature;
 		$resp = $this->http->post(self::CHECK_STATUS_URL, $body, array('Content-Type' => 'application/json; charset=utf-8'));
-		$data = json_decode($resp->body, true);
-		if ($data === null) {
-			throw new RobokassaException('Некорректный JSON в ответе: ' . $resp->body);
+		$this->assertSuccessStatus($resp, 'Ошибка получения статуса чека.');
+		return $this->decodeJsonResponse($resp->body);
+	}
+
+	/**
+	 * Проверяет успешный HTTP-статус.
+	 *
+	 * @param Response $response
+	 * @param string $message
+	 * @return void
+	 * @throws RobokassaException
+	 */
+	private function assertSuccessStatus(Response $response, string $message): void {
+		if ($response->status !== 200) {
+			throw new RobokassaException($message . ' HTTP Status: ' . $response->status);
+		}
+	}
+
+	/**
+	 * Кодирует данные в JSON с проверкой ошибки.
+	 *
+	 * @param array $data
+	 * @param int $flags
+	 * @return string
+	 * @throws RobokassaException
+	 */
+	private function encodeJson(array $data, int $flags): string {
+		$json = json_encode($data, $flags);
+		if ($json === false) {
+			throw new RobokassaException('Ошибка кодирования JSON: ' . json_last_error_msg());
+		}
+		return $json;
+	}
+
+	/**
+	 * Разбирает JSON-ответ с проверкой пустого и невалидного тела.
+	 *
+	 * @param string $body
+	 * @return array
+	 * @throws RobokassaException
+	 */
+	private function decodeJsonResponse(string $body): array {
+		if (trim($body) === '') {
+			throw new RobokassaException('Пустой JSON-ответ');
+		}
+		$data = json_decode($body, true);
+		if (json_last_error() !== JSON_ERROR_NONE) {
+			throw new RobokassaException('Некорректный JSON в ответе: ' . json_last_error_msg());
+		}
+		if (!is_array($data)) {
+			throw new RobokassaException('JSON-ответ должен быть объектом или массивом');
 		}
 		return $data;
 	}
