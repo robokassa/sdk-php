@@ -126,6 +126,23 @@ class ExamplesTest extends TestCase {
 		$this->assertSame($this->expectedCurlBody(), $this->http->lastBody);
 	}
 
+	public function testSendCurlPassesRecurringAsPaymentParameter(): void {
+		$this->http->queueResponse(new Response('{"invoiceID":10}', 200));
+
+		$this->createRobo()->payment()->sendCurl(array(
+			'OutSum' => 5,
+			'InvoiceID' => 154,
+			'Description' => 'Subscription parent payment',
+			'Recurring' => 'true',
+		));
+
+		$this->assertSame(
+			'OutSum=5&InvoiceID=154&Description=Subscription+parent+payment&Recurring=true'
+				. '&MerchantLogin=login&SignatureValue=ea9bd729a4456cfbfb91294b8e2781d6',
+			$this->http->lastBody
+		);
+	}
+
 	public function testSendCurlIsDeprecated(): void {
 		$method = new \ReflectionMethod(PaymentService::class, 'sendCurl');
 
@@ -142,6 +159,173 @@ class ExamplesTest extends TestCase {
 		$this->assertSame('https://services.robokassa.ru/InvoiceServiceWebApi/api/CreateInvoice', $this->http->lastUrl);
 		$this->assertSame(array('Content-Type' => 'application/json'), $this->http->lastHeaders);
 		$this->assertSame($this->expectedJwtBody(), $this->http->lastBody);
+	}
+
+	public function testSendJwtPassesRecurringInAdditionalParameters(): void {
+		$this->http->queueResponse(new Response('{"url":"https://pay"}', 200));
+
+		$this->createRobo()->payment()->sendJwt(array(
+			'InvId' => 200001,
+			'OutSum' => 100,
+			'Description' => 'Subscription parent payment',
+			'AdditionalParameters' => array(
+				'Recurring' => 'true',
+			),
+		));
+
+		$payload = $this->decodeJwtPayloadFromLastBody();
+
+		$this->assertSame(array('Recurring' => 'true'), $payload['AdditionalParameters']);
+		$this->assertArrayNotHasKey('Recurring', $payload);
+	}
+
+	public function testSendRecurringBuildsCurrentRequestAndReturnsOk(): void {
+		$this->http->queueResponse(new Response('OK200002', 200));
+		$receipt = array(
+			'items' => array(array(
+				'name' => 'Subscription',
+				'quantity' => 1,
+				'sum' => 100,
+				'payment_method' => 'full_payment',
+				'payment_object' => 'service',
+				'tax' => 'none',
+			)),
+		);
+
+		$result = $this->createRobo()->payment()->sendRecurring(array(
+			'OutSum' => '100.00',
+			'InvoiceID' => 200002,
+			'PreviousInvoiceID' => 200001,
+			'Description' => 'Recurring payment',
+			'Receipt' => $receipt,
+			'Shp_order' => 'abc 1',
+		));
+
+		$this->assertSame('OK200002', $result);
+		$this->assertSame('https://auth.robokassa.ru/Merchant/Recurring', $this->http->lastUrl);
+		$this->assertSame(array('Content-Type' => 'application/x-www-form-urlencoded'), $this->http->lastHeaders);
+		$this->assertSame($this->expectedRecurringBody(), $this->http->lastBody);
+		$this->assertStringNotContainsString('Receipt=%25257B', $this->http->lastBody);
+		$this->assertStringNotContainsString(
+			hash('md5', 'login:100.00:200002:200001:p1:Shp_order=abc+1'),
+			$this->http->lastBody
+		);
+	}
+
+	public function testSendRecurringRejectsTestMode(): void {
+		$this->expectException(RobokassaException::class);
+		$this->expectExceptionMessage('Recurring payments are not supported in test mode.');
+
+		$this->createRobo(null, array(
+			'is_test' => true,
+			'test_password1' => 'tp1',
+			'test_password2' => 'tp2',
+		))->payment()->sendRecurring(array(
+			'OutSum' => '100.00',
+			'InvoiceID' => 200002,
+			'PreviousInvoiceID' => 200001,
+		));
+	}
+
+	public function testSendRecurringRequiresContractParameters(): void {
+		$this->expectException(RobokassaException::class);
+		$this->expectExceptionMessage('Required parameters: OutSum, InvoiceID, PreviousInvoiceID');
+
+		$this->createRobo()->payment()->sendRecurring(array(
+			'OutSum' => '100.00',
+			'InvoiceID' => 200002,
+		));
+	}
+
+	public function testSendRecurringRejectsForbiddenParameters(): void {
+		$this->expectException(RobokassaException::class);
+		$this->expectExceptionMessage('Forbidden recurring parameter: Recurring');
+
+		$this->createRobo()->payment()->sendRecurring(array(
+			'OutSum' => '100.00',
+			'InvoiceID' => 200002,
+			'PreviousInvoiceID' => 200001,
+			'Recurring' => 'true',
+		));
+	}
+
+	/**
+	 * @dataProvider invalidRecurringIdentifierProvider
+	 * @param mixed $value
+	 */
+	public function testSendRecurringRejectsInvalidIdentifiers(string $name, $value): void {
+		$this->expectException(RobokassaException::class);
+		$this->expectExceptionMessage('Invalid recurring parameter ' . $name . ': positive integer expected.');
+
+		$params = array(
+			'OutSum' => '100.00',
+			'InvoiceID' => 200002,
+			'PreviousInvoiceID' => 200001,
+		);
+		$params[$name] = $value;
+
+		$this->createRobo()->payment()->sendRecurring($params);
+	}
+
+	public function invalidRecurringIdentifierProvider(): array {
+		return array(
+			array('InvoiceID', -1),
+			array('InvoiceID', 1.5),
+			array('InvoiceID', '1.5'),
+			array('PreviousInvoiceID', -1),
+			array('PreviousInvoiceID', 1.5),
+			array('PreviousInvoiceID', '1.5'),
+		);
+	}
+
+	/**
+	 * @dataProvider invalidRecurringOutSumProvider
+	 * @param mixed $value
+	 */
+	public function testSendRecurringRejectsInvalidOutSum($value): void {
+		$this->expectException(RobokassaException::class);
+		$this->expectExceptionMessage('Invalid recurring parameter OutSum: positive decimal expected.');
+
+		$this->createRobo()->payment()->sendRecurring(array(
+			'OutSum' => $value,
+			'InvoiceID' => 200002,
+			'PreviousInvoiceID' => 200001,
+		));
+	}
+
+	public function invalidRecurringOutSumProvider(): array {
+		return array(
+			array(-1),
+			array(0),
+			array('1,00'),
+			array('1e2'),
+			array('invalid'),
+		);
+	}
+
+	public function testSendRecurringRejectsUnsupportedParameter(): void {
+		$this->expectException(RobokassaException::class);
+		$this->expectExceptionMessage('Unsupported recurring parameter: Email');
+
+		$this->createRobo()->payment()->sendRecurring(array(
+			'OutSum' => '100.00',
+			'InvoiceID' => 200002,
+			'PreviousInvoiceID' => 200001,
+			'Email' => 'customer@example.com',
+		));
+	}
+
+	public function testSendRecurringRejectsNonOkResponse(): void {
+		$this->http->queueResponse(new Response('Recurring error', 200));
+
+		$this->expectException(RobokassaException::class);
+		$this->expectExceptionMessage('Recurring payment response is not successful.');
+
+		$this->createRobo()->payment()->sendRecurring(array(
+			'OutSum' => '100.00',
+			'InvoiceID' => 200002,
+			'PreviousInvoiceID' => 200001,
+		));
 	}
 
 	public function testGetCheckStatus(): void {
@@ -290,6 +474,24 @@ class ExamplesTest extends TestCase {
 		return '"eyJhbGciOiJNRDUiLCJ0eXAiOiJKV1QifQ.'
 			. 'eyJNZXJjaGFudExvZ2luIjoibG9naW4iLCJJbnZvaWNlVHlwZSI6Ik9uZVRpbWUiLCJDdWx0dXJlIjoicnUiLCJJbnZJZCI6MSwiT3V0U3VtIjoxLCJEZXNjcmlwdGlvbiI6InRlc3QifQ.'
 			. 'FKHP-6TuMui4tsnqUvjumw"';
+	}
+
+	private function expectedRecurringBody(): string {
+		return 'OutSum=100.00&InvoiceID=200002&PreviousInvoiceID=200001&Description=Recurring+payment'
+			. '&Receipt=%257B%2522items%2522%253A%255B%257B%2522name%2522%253A%2522Subscription%2522%252C'
+			. '%2522quantity%2522%253A1%252C%2522sum%2522%253A100%252C%2522payment_method%2522%253A'
+			. '%2522full_payment%2522%252C%2522payment_object%2522%253A%2522service%2522%252C%2522tax%2522%253A'
+			. '%2522none%2522%257D%255D%257D&Shp_order=abc%2B1&MerchantLogin=login'
+			. '&SignatureValue=1be6746b70e8f702171f85e427399a9e';
+	}
+
+	private function decodeJwtPayloadFromLastBody(): array {
+		$jwt = json_decode($this->http->lastBody, true);
+		$parts = explode('.', $jwt);
+		$payload = strtr($parts[1], '-_', '+/');
+		$payload .= str_repeat('=', (4 - strlen($payload) % 4) % 4);
+
+		return json_decode(base64_decode($payload), true);
 	}
 
 	private function statusFilters(): array {

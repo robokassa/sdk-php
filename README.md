@@ -42,6 +42,7 @@ md5, ripemd160, sha1, sha256, sha384, sha512
 | Метод | Описание | Документация |
 | --- | --- | --- |
 | `payment()->sendJwt(array $params): string` | Рекомендуемый способ. Создаёт ссылку на оплату через JWT-интерфейс. | [Invoice API](https://docs.robokassa.ru/ru/invoice-api) |
+| `payment()->sendRecurring(array $params): string` | Создаёт дочерний рекуррентный платёж по оплаченной материнской операции. | [Периодические платежи](https://docs.robokassa.ru/ru/recurring-payments) |
 | `status()->getInvoiceInformationList(array $filters): array` | Получает список выставленных счетов по фильтрам. | [Invoice API](https://docs.robokassa.ru/ru/invoice-api) |
 | `webService()->getPaymentMethods(string $lang = 'en'): array` | Получает список доступных способов оплаты. | [XML-интерфейсы](https://docs.robokassa.ru/ru/xml-interfaces) |
 | `webService()->opState(int $invoiceID): array` | Получает статус оплаты по `InvoiceID`. | [XML-интерфейсы](https://docs.robokassa.ru/ru/xml-interfaces) |
@@ -60,6 +61,36 @@ $url = $robokassa->payment()->sendJwt([
 ```
 
 Метод возвращает строку со ссылкой на оплату.
+
+## Рекуррентные платежи
+
+Для материнского платежа создайте обычный счёт через `sendJwt()` и передайте `Recurring=true` в `AdditionalParameters`:
+
+```php
+$url = $robokassa->payment()->sendJwt([
+	'OutSum' => 100.00,
+	'InvId' => 200001,
+	'Description' => 'Оплата подписки',
+	'AdditionalParameters' => [
+		'Recurring' => 'true',
+	],
+]);
+```
+
+После успешной оплаты материнского платежа можно создать дочерний платёж:
+
+```php
+$result = $robokassa->payment()->sendRecurring([
+	'OutSum' => '100.00',
+	'InvoiceID' => 200002,
+	'PreviousInvoiceID' => 200001,
+	'Description' => 'Повторная оплата подписки',
+]);
+```
+
+Метод возвращает текстовый ответ Robokassa, например `OK200002`. Такой ответ означает создание дочерней операции, а не гарантированное успешное списание. Итоговый статус проверяйте через `ResultURL`/`ResultUrl2` или XML-интерфейс в боевом режиме.
+
+У `Merchant/Recurring` нет тестового режима. Если клиент SDK создан с `is_test => true`, `sendRecurring()` выбросит исключение.
 
 ## Получение статуса счетов
 
@@ -118,6 +149,7 @@ $url = $robokassa->payment()->sendCurl([
 Основные примеры находятся в папке [`examples/`](./examples):
 
 * [`send_payment_jwt.php`](./examples/send_payment_jwt.php) — создание ссылки на оплату через JWT.
+* [`send_recurring_payment.php`](./examples/send_recurring_payment.php) — создание дочернего рекуррентного платежа по оплаченной материнской операции.
 * [`get_invoice_information.php`](./examples/get_invoice_information.php) — получение списка счетов через `$robokassa->status()`.
 * [`get_payment_methods.php`](./examples/get_payment_methods.php) — получение доступных способов оплаты.
 * [`get_invoice_status.php`](./examples/get_invoice_status.php) — проверка статуса оплаты через XML-интерфейс.

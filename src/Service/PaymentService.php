@@ -16,6 +16,7 @@ class PaymentService {
 	private string $paymentCurl;
 	private string $jwtApiUrl;
 	private string $hashType;
+	private string $recurringUrl;
 
 	public function __construct(
 		HttpClientInterface $http,
@@ -26,7 +27,8 @@ class PaymentService {
 		string $paymentUrl,
 		string $paymentCurl,
 		string $jwtApiUrl,
-		string $hashType
+		string $hashType,
+		string $recurringUrl = 'https://auth.robokassa.ru/Merchant/Recurring'
 	) {
 		$this->http = $http;
 		$this->sign = $sign;
@@ -37,6 +39,7 @@ class PaymentService {
 		$this->paymentCurl = $paymentCurl;
 		$this->jwtApiUrl = $jwtApiUrl;
 		$this->hashType = $hashType;
+		$this->recurringUrl = $recurringUrl;
 	}
 
 	/**
@@ -92,6 +95,29 @@ class PaymentService {
 	}
 
 	/**
+	 * Создание дочернего рекуррентного платежа.
+	 *
+	 * @param array $params
+	 * @return string
+	 * @throws RobokassaException
+	 */
+	public function sendRecurring(array $params): string {
+		$params = $this->prepareRecurringParams($params);
+		$sigParams = $this->buildRecurringSignature($params);
+		$params['SignatureValue'] = $this->sign->createPaymentSignature(
+			$sigParams,
+			$this->merchantLogin,
+			$this->password1,
+			$this->hashType
+		);
+		$resp = $this->http->post($this->recurringUrl, http_build_query($params), array(
+			'Content-Type' => 'application/x-www-form-urlencoded',
+		));
+		$this->assertSuccessStatus($resp, 'Recurring payment request failed.');
+		return $this->decodeRecurringResponse($resp->body);
+	}
+
+	/**
 	 * Подготовка параметров для CURL-запроса.
 	 *
 	 * @param array $params
@@ -111,6 +137,73 @@ class PaymentService {
 	}
 
 	/**
+	 * Подготовка параметров дочернего рекуррентного платежа.
+	 *
+	 * @param array $params
+	 * @return array
+	 * @throws RobokassaException
+	 */
+	private function prepareRecurringParams(array $params): array {
+		if ($this->isTest) {
+			throw new RobokassaException('Recurring payments are not supported in test mode.');
+		}
+		foreach (array('OutSum', 'InvoiceID', 'PreviousInvoiceID') as $required) {
+			if (!array_key_exists($required, $params)) {
+				throw new RobokassaException('Required parameters: OutSum, InvoiceID, PreviousInvoiceID');
+			}
+		}
+		foreach (array('Recurring', 'IncCurrLabel', 'ExpirationDate', 'IsTest') as $forbidden) {
+			if (array_key_exists($forbidden, $params)) {
+				throw new RobokassaException('Forbidden recurring parameter: ' . $forbidden);
+			}
+		}
+		foreach ($params as $name => $value) {
+			if (!in_array($name, array('OutSum', 'InvoiceID', 'PreviousInvoiceID', 'Description', 'Receipt'), true)
+				&& !preg_match('~^Shp_~iu', $name)) {
+				throw new RobokassaException('Unsupported recurring parameter: ' . $name);
+			}
+		}
+		if (!$this->isPositiveInteger($params['InvoiceID'])) {
+			throw new RobokassaException('Invalid recurring parameter InvoiceID: positive integer expected.');
+		}
+		if (!$this->isPositiveInteger($params['PreviousInvoiceID'])) {
+			throw new RobokassaException('Invalid recurring parameter PreviousInvoiceID: positive integer expected.');
+		}
+		if (!$this->isPositiveAmount($params['OutSum'])) {
+			throw new RobokassaException('Invalid recurring parameter OutSum: positive decimal expected.');
+		}
+		$params['MerchantLogin'] = $this->merchantLogin;
+		if (!empty($params['Receipt'])) {
+			$params['Receipt'] = urlencode($this->encodeJson($params['Receipt']));
+		}
+		return $this->encodeShpParams($params);
+	}
+
+	/**
+	 * @param mixed $value
+	 * @return bool
+	 */
+	private function isPositiveInteger($value): bool {
+		if (!is_int($value) && !is_string($value)) {
+			return false;
+		}
+		$value = (string)$value;
+		return preg_match('~^\d+$~D', $value) === 1 && preg_match('~[1-9]~', $value) === 1;
+	}
+
+	/**
+	 * @param mixed $value
+	 * @return bool
+	 */
+	private function isPositiveAmount($value): bool {
+		if (!is_int($value) && !is_float($value) && !is_string($value)) {
+			return false;
+		}
+		$value = (string)$value;
+		return preg_match('~^\d+(?:\.\d+)?$~D', $value) === 1 && preg_match('~[1-9]~', $value) === 1;
+	}
+
+	/**
 	 * Формирование массива для подписи.
 	 *
 	 * @param array $params
@@ -120,6 +213,20 @@ class PaymentService {
 		$sig = array('OutSum' => $params['OutSum'], 'InvoiceID' => $params['InvoiceID'] ?? '');
 		if (!empty($params['Receipt'])) {
 			$sig['Receipt'] = urldecode($params['Receipt']);
+		}
+		return $this->appendShpParams($sig, $params);
+	}
+
+	/**
+	 * Формирование массива для подписи рекуррентного платежа.
+	 *
+	 * @param array $params
+	 * @return array
+	 */
+	private function buildRecurringSignature(array $params): array {
+		$sig = array('OutSum' => $params['OutSum'], 'InvoiceID' => $params['InvoiceID']);
+		if (!empty($params['Receipt'])) {
+			$sig['Receipt'] = $params['Receipt'];
 		}
 		return $this->appendShpParams($sig, $params);
 	}
@@ -163,7 +270,15 @@ class PaymentService {
 	 * @return array
 	 */
 	private function appendOptionalJwtPayload(array $payload, array $params): array {
-		$optional = array('Description','MerchantComments','InvoiceItems','UserFields','SuccessUrl2Data','FailUrl2Data');
+		$optional = array(
+			'Description',
+			'MerchantComments',
+			'InvoiceItems',
+			'UserFields',
+			'SuccessUrl2Data',
+			'FailUrl2Data',
+			'AdditionalParameters',
+		);
 		foreach ($optional as $key) {
 			if (!empty($params[$key])) {
 				$payload[$key] = $params[$key];
@@ -255,5 +370,23 @@ class PaymentService {
 			throw new RobokassaException('JSON-ответ должен быть объектом или массивом');
 		}
 		return $data;
+	}
+
+	/**
+	 * Проверяет текстовый ответ рекуррентного платежа.
+	 *
+	 * @param string $body
+	 * @return string
+	 * @throws RobokassaException
+	 */
+	private function decodeRecurringResponse(string $body): string {
+		$body = trim($body);
+		if ($body === '') {
+			throw new RobokassaException('Empty recurring payment response.');
+		}
+		if (!preg_match('~^OK\+?\d+$~i', $body)) {
+			throw new RobokassaException('Recurring payment response is not successful.');
+		}
+		return $body;
 	}
 }
