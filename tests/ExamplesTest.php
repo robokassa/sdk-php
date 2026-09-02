@@ -179,6 +179,138 @@ class ExamplesTest extends TestCase {
 		$this->assertArrayNotHasKey('Recurring', $payload);
 	}
 
+	public function testSendSavedCardPassesTokenInAdditionalParameters(): void {
+		$this->http->queueResponse(new Response('{"url":"https://pay"}', 200));
+
+		$url = $this->createRobo()->payment()->sendSavedCard(array(
+			'InvId' => 300001,
+			'OutSum' => 100,
+			'Description' => 'Saved card payment',
+			'Token' => 'E1253728-48A9-488D-A045-9954C442AF5C-qNavrXC6Y4',
+			'AdditionalParameters' => array(
+				'Email' => 'customer@example.com',
+				'ResultURL2' => 'https://example.test/result',
+			),
+		));
+
+		$payload = $this->decodeJwtPayloadFromLastBody();
+
+		$this->assertSame('https://pay', $url);
+		$this->assertSame('https://services.robokassa.ru/InvoiceServiceWebApi/api/CreateInvoice', $this->http->lastUrl);
+		$this->assertSame(array('Content-Type' => 'application/json'), $this->http->lastHeaders);
+		$this->assertArrayNotHasKey('Token', $payload);
+		$this->assertSame(array(
+			'Email' => 'customer@example.com',
+			'ResultURL2' => 'https://example.test/result',
+			'Token' => 'E1253728-48A9-488D-A045-9954C442AF5C-qNavrXC6Y4',
+		), $payload['AdditionalParameters']);
+	}
+
+	public function testSendSavedCardAcceptsTokenFromAdditionalParameters(): void {
+		$this->http->queueResponse(new Response('{"url":"https://pay"}', 200));
+
+		$this->createRobo()->payment()->sendSavedCard(array(
+			'InvId' => 300001,
+			'OutSum' => 100,
+			'AdditionalParameters' => array(
+				'Token' => 'saved-card-token',
+			),
+		));
+
+		$payload = $this->decodeJwtPayloadFromLastBody();
+
+		$this->assertSame(array('Token' => 'saved-card-token'), $payload['AdditionalParameters']);
+		$this->assertArrayNotHasKey('Token', $payload);
+	}
+
+	public function testSendSavedCardRequiresToken(): void {
+		$this->expectException(RobokassaException::class);
+		$this->expectExceptionMessage('Required saved card parameter: Token');
+
+		$this->createRobo()->payment()->sendSavedCard(array(
+			'InvId' => 300001,
+			'OutSum' => 100,
+		));
+	}
+
+	public function testSendSavedCardRejectsInvalidTokenType(): void {
+		$this->expectException(RobokassaException::class);
+		$this->expectExceptionMessage('Invalid saved card parameter Token: string expected.');
+
+		$this->createRobo()->payment()->sendSavedCard(array(
+			'InvId' => 300001,
+			'OutSum' => 100,
+			'Token' => array('saved-card-token'),
+		));
+	}
+
+	public function testSendSavedCardRejectsInvalidAdditionalParameters(): void {
+		$this->expectException(RobokassaException::class);
+		$this->expectExceptionMessage('AdditionalParameters must be an array.');
+
+		$this->createRobo()->payment()->sendSavedCard(array(
+			'InvId' => 300001,
+			'OutSum' => 100,
+			'Token' => 'saved-card-token',
+			'AdditionalParameters' => 'Email=customer@example.com',
+		));
+	}
+
+	public function testSendSavedCardRejectsConflictingTokenValues(): void {
+		$this->expectException(RobokassaException::class);
+		$this->expectExceptionMessage('Conflicting saved card Token values.');
+
+		$this->createRobo()->payment()->sendSavedCard(array(
+			'InvId' => 300001,
+			'OutSum' => 100,
+			'Token' => 'root-token',
+			'AdditionalParameters' => array(
+				'Token' => 'additional-token',
+			),
+		));
+	}
+
+	/**
+	 * @dataProvider savedCardForbiddenParameterProvider
+	 */
+	public function testSendSavedCardRejectsForbiddenParameters(array $params, string $message): void {
+		$this->expectException(RobokassaException::class);
+		$this->expectExceptionMessage($message);
+
+		$this->createRobo()->payment()->sendSavedCard($params);
+	}
+
+	public function savedCardForbiddenParameterProvider(): array {
+		return array(
+			array(
+				array('InvId' => 300001, 'OutSum' => 100, 'Token' => 'saved-card-token', 'Recurring' => 'true'),
+				'Forbidden saved card parameter: Recurring',
+			),
+			array(
+				array('InvId' => 300001, 'OutSum' => 100, 'Token' => 'saved-card-token', 'StepByStep' => 'true'),
+				'Forbidden saved card parameter: StepByStep',
+			),
+			array(
+				array(
+					'InvId' => 300001,
+					'OutSum' => 100,
+					'Token' => 'saved-card-token',
+					'AdditionalParameters' => array('Recurring' => 'true'),
+				),
+				'Forbidden saved card parameter: AdditionalParameters.Recurring',
+			),
+			array(
+				array(
+					'InvId' => 300001,
+					'OutSum' => 100,
+					'Token' => 'saved-card-token',
+					'AdditionalParameters' => array('StepByStep' => 'true'),
+				),
+				'Forbidden saved card parameter: AdditionalParameters.StepByStep',
+			),
+		);
+	}
+
 	public function testSendRecurringBuildsCurrentRequestAndReturnsOk(): void {
 		$this->http->queueResponse(new Response('OK200002', 200));
 		$receipt = array(

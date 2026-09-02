@@ -95,6 +95,17 @@ class PaymentService {
 	}
 
 	/**
+	 * Создание счёта для оплаты по сохранённой карте через JWT интерфейс.
+	 *
+	 * @param array $params
+	 * @return string
+	 * @throws RobokassaException
+	 */
+	public function sendSavedCard(array $params): string {
+		return $this->sendJwt($this->prepareSavedCardParams($params));
+	}
+
+	/**
 	 * Создание дочернего рекуррентного платежа.
 	 *
 	 * @param array $params
@@ -177,6 +188,90 @@ class PaymentService {
 			$params['Receipt'] = urlencode($this->encodeJson($params['Receipt']));
 		}
 		return $this->encodeShpParams($params);
+	}
+
+	/**
+	 * Подготовка параметров оплаты по сохранённой карте.
+	 *
+	 * @param array $params
+	 * @return array
+	 * @throws RobokassaException
+	 */
+	private function prepareSavedCardParams(array $params): array {
+		$additional = $this->getSavedCardAdditionalParameters($params);
+		$rootTokenExists = array_key_exists('Token', $params);
+		$additionalTokenExists = array_key_exists('Token', $additional);
+
+		if (!$rootTokenExists && !$additionalTokenExists) {
+			throw new RobokassaException('Required saved card parameter: Token');
+		}
+		$rootToken = $rootTokenExists ? $this->normalizeSavedCardToken($params['Token']) : null;
+		$additionalToken = $additionalTokenExists ? $this->normalizeSavedCardToken($additional['Token']) : null;
+		if ($rootToken !== null && $additionalToken !== null && $rootToken !== $additionalToken) {
+			throw new RobokassaException('Conflicting saved card Token values.');
+		}
+
+		$this->assertSavedCardExclusiveParameters($params, $additional);
+
+		$additional['Token'] = $rootToken !== null ? $rootToken : $additionalToken;
+		$params['AdditionalParameters'] = $additional;
+		unset($params['Token']);
+
+		return $params;
+	}
+
+	/**
+	 * Нормализует Token сохранённой карты.
+	 *
+	 * @param mixed $token
+	 * @return string
+	 * @throws RobokassaException
+	 */
+	private function normalizeSavedCardToken($token): string {
+		if (is_array($token) || is_object($token)) {
+			throw new RobokassaException('Invalid saved card parameter Token: string expected.');
+		}
+		$token = trim((string)$token);
+		if ($token === '') {
+			throw new RobokassaException('Required saved card parameter: Token');
+		}
+		return $token;
+	}
+
+	/**
+	 * Возвращает AdditionalParameters для оплаты по сохранённой карте.
+	 *
+	 * @param array $params
+	 * @return array
+	 * @throws RobokassaException
+	 */
+	private function getSavedCardAdditionalParameters(array $params): array {
+		if (!array_key_exists('AdditionalParameters', $params)) {
+			return array();
+		}
+		if (!is_array($params['AdditionalParameters'])) {
+			throw new RobokassaException('AdditionalParameters must be an array.');
+		}
+		return $params['AdditionalParameters'];
+	}
+
+	/**
+	 * Проверяет взаимоисключающие параметры Invoice API для оплаты по сохранённой карте.
+	 *
+	 * @param array $params
+	 * @param array $additional
+	 * @return void
+	 * @throws RobokassaException
+	 */
+	private function assertSavedCardExclusiveParameters(array $params, array $additional): void {
+		foreach (array('Recurring', 'StepByStep') as $name) {
+			if (array_key_exists($name, $params)) {
+				throw new RobokassaException('Forbidden saved card parameter: ' . $name);
+			}
+			if (array_key_exists($name, $additional)) {
+				throw new RobokassaException('Forbidden saved card parameter: AdditionalParameters.' . $name);
+			}
+		}
 	}
 
 	/**
