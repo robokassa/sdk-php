@@ -42,6 +42,7 @@ md5, ripemd160, sha1, sha256, sha384, sha512
 | Метод | Описание | Документация |
 | --- | --- | --- |
 | `payment()->sendJwt(array $params): string` | Рекомендуемый способ. Создаёт ссылку на оплату через JWT-интерфейс. | [Invoice API](https://docs.robokassa.ru/ru/invoice-api) |
+| `payment()->sendSavedCard(array $params): string` | Создаёт счёт для оплаты по сохранённой банковской карте через JWT-интерфейс. | [Оплата по сохраненной карте](https://docs.robokassa.ru/ru/saving) |
 | `payment()->sendRecurring(array $params): string` | Создаёт дочерний рекуррентный платёж по оплаченной материнской операции. | [Периодические платежи](https://docs.robokassa.ru/ru/recurring-payments) |
 | `status()->getInvoiceInformationList(array $filters): array` | Получает список выставленных счетов по фильтрам. | [Invoice API](https://docs.robokassa.ru/ru/invoice-api) |
 | `webService()->getPaymentMethods(string $lang = 'en'): array` | Получает список доступных способов оплаты. | [XML-интерфейсы](https://docs.robokassa.ru/ru/xml-interfaces) |
@@ -61,6 +62,32 @@ $url = $robokassa->payment()->sendJwt([
 ```
 
 Метод возвращает строку со ссылкой на оплату.
+
+## Оплата по сохранённой карте
+
+Для оплаты по сохранённой карте нужен `OpKey` прошлой операции, где покупатель уже использовал банковскую карту. Получите его из уведомления `ResultUrl2` или через `webService()->opState()`, сохраните в своей системе и передайте как `Token` при создании нового счёта:
+
+```php
+$url = $robokassa->payment()->sendSavedCard([
+	'OutSum' => 100.00,
+	'InvId' => 300001,
+	'Description' => 'Оплата заказа #300001',
+	'Token' => $opKey,
+	'AdditionalParameters' => [
+		'Email' => 'buyer@example.com',
+	],
+]);
+```
+
+SDK передаст токен в поле `Token` внутри массива `AdditionalParameters`:
+
+```php
+'AdditionalParameters' => [
+	'Token' => $opKey,
+]
+```
+
+Если `AdditionalParameters` уже содержит другие значения, они сохранятся. `Token` нельзя совмещать с `Recurring` и `StepByStep` в одном счёте.
 
 ## Рекуррентные платежи
 
@@ -149,6 +176,7 @@ $url = $robokassa->payment()->sendCurl([
 Основные примеры находятся в папке [`examples/`](./examples):
 
 * [`send_payment_jwt.php`](./examples/send_payment_jwt.php) — создание ссылки на оплату через JWT.
+* [`send_saved_card_payment.php`](./examples/send_saved_card_payment.php) — создание счёта для оплаты по сохранённой карте.
 * [`send_recurring_payment.php`](./examples/send_recurring_payment.php) — создание дочернего рекуррентного платежа по оплаченной материнской операции.
 * [`get_invoice_information.php`](./examples/get_invoice_information.php) — получение списка счетов через `$robokassa->status()`.
 * [`get_payment_methods.php`](./examples/get_payment_methods.php) — получение доступных способов оплаты.
