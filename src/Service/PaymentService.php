@@ -17,6 +17,8 @@ class PaymentService {
 	private string $jwtApiUrl;
 	private string $hashType;
 	private string $recurringUrl;
+	private string $holdConfirmUrl;
+	private string $holdCancelUrl;
 
 	public function __construct(
 		HttpClientInterface $http,
@@ -28,7 +30,9 @@ class PaymentService {
 		string $paymentCurl,
 		string $jwtApiUrl,
 		string $hashType,
-		string $recurringUrl = 'https://auth.robokassa.ru/Merchant/Recurring'
+		string $recurringUrl = 'https://auth.robokassa.ru/Merchant/Recurring',
+		string $holdConfirmUrl = 'https://auth.robokassa.ru/Merchant/Payment/Confirm',
+		string $holdCancelUrl = 'https://auth.robokassa.ru/Merchant/Payment/Cancel'
 	) {
 		$this->http = $http;
 		$this->sign = $sign;
@@ -40,6 +44,8 @@ class PaymentService {
 		$this->jwtApiUrl = $jwtApiUrl;
 		$this->hashType = $hashType;
 		$this->recurringUrl = $recurringUrl;
+		$this->holdConfirmUrl = $holdConfirmUrl;
+		$this->holdCancelUrl = $holdCancelUrl;
 	}
 
 	/**
@@ -78,6 +84,7 @@ class PaymentService {
 	 * @throws RobokassaException
 	 */
 	public function sendJwt(array $params): string {
+		$params = $this->prepareJwtEnvironmentParams($params);
 		$payload = $this->buildJwtPayload($params);
 		list(, , $toSign) = $this->sign->encodeJwtParts(array('alg' => 'MD5', 'typ' => 'JWT'), $payload);
 		$jwt = $toSign . '.' . $this->sign->jwtSignMd5($toSign, $this->merchantLogin, $this->password1);
@@ -88,6 +95,12 @@ class PaymentService {
 		);
 		$this->assertSuccessStatus($resp, 'JWT request failed.');
 		$data = $this->decodeJsonResponse($resp->body);
+		if (($data['isSuccess'] ?? null) === false) {
+			$message = isset($data['message']) && is_string($data['message'])
+				? ': ' . $data['message']
+				: '.';
+			throw new RobokassaException('Invoice API request failed' . $message);
+		}
 		if (!empty($data['url'])) {
 			return $data['url'];
 		}
@@ -103,6 +116,91 @@ class PaymentService {
 	 */
 	public function sendSavedCard(array $params): string {
 		return $this->sendJwt($this->prepareSavedCardParams($params));
+	}
+
+	/**
+	 * Создание счёта с двухстадийной оплатой через Invoice API.
+	 *
+	 * @param array $params
+	 * @return string
+	 * @throws RobokassaException
+	 */
+	public function sendHold(array $params): string {
+		return $this->sendJwt($this->prepareHoldParams($params));
+	}
+
+	/**
+	 * Подтверждение списания удержанных средств.
+	 *
+	 * Возвращаемое значение означает, что запрос принят или отклонён. Итоговое
+	 * состояние операции необходимо проверять через OpStateExt.
+	 *
+	 * @param int $invoiceID
+	 * @param string $outSum
+	 * @param array|null $receipt
+	 * @return bool
+	 * @throws RobokassaException
+	 */
+	public function confirmHold(int $invoiceID, string $outSum, ?array $receipt = null): bool {
+		$this->assertHoldActionParams($invoiceID, $outSum);
+		$params = array(
+			'MerchantLogin' => $this->merchantLogin,
+			'InvoiceID' => $invoiceID,
+			'OutSum' => $outSum,
+		);
+		$encodedReceipt = null;
+		if ($receipt !== null) {
+			$encodedReceipt = urlencode($this->encodeJson($receipt));
+			$params['Receipt'] = $encodedReceipt;
+		}
+		$params['SignatureValue'] = $this->sign->signHoldConfirm(
+			$this->merchantLogin,
+			$outSum,
+			(string)$invoiceID,
+			$this->password1,
+			$encodedReceipt,
+			$this->hashType
+		);
+
+		$resp = $this->http->post($this->holdConfirmUrl, http_build_query($params), array(
+			'Content-Type' => 'application/x-www-form-urlencoded',
+		));
+		$this->assertSuccessStatus($resp, 'Hold confirmation request failed.');
+
+		return $this->decodeHoldActionResponse($resp->body);
+	}
+
+	/**
+	 * Отмена холдирования.
+	 *
+	 * Возвращаемое значение означает, что запрос принят или отклонён. Итоговое
+	 * состояние операции необходимо проверять через OpStateExt.
+	 *
+	 * @param int $invoiceID
+	 * @param string $outSum
+	 * @return bool
+	 * @throws RobokassaException
+	 */
+	public function cancelHold(int $invoiceID, string $outSum): bool {
+		$this->assertHoldActionParams($invoiceID, $outSum);
+		$params = array(
+			'MerchantLogin' => $this->merchantLogin,
+			'InvoiceID' => $invoiceID,
+			'OutSum' => $outSum,
+			'SignatureValue' => $this->sign->signHoldCancel(
+				$this->merchantLogin,
+				(string)$invoiceID,
+				$this->password1,
+				$this->hashType
+			),
+		);
+
+		$resp = $this->http->post($this->holdCancelUrl, http_build_query($params), array(
+			'Content-Type' => 'application/x-www-form-urlencoded',
+		));
+		$this->assertSuccessStatus($resp, 'Hold cancellation request failed.');
+
+		return $this->decodeHoldActionResponse($resp->body);
 	}
 
 	/**
@@ -145,6 +243,80 @@ class PaymentService {
 			$params['Receipt'] = urlencode($encoded);
 		}
 		return $this->encodeShpParams($params);
+	}
+
+	/**
+	 * Согласует тестовый режим клиента с параметрами Invoice API.
+	 *
+	 * @param array $params
+	 * @return array
+	 * @throws RobokassaException
+	 */
+	private function prepareJwtEnvironmentParams(array $params): array {
+		if (!$this->isTest) {
+			return $params;
+		}
+		$additional = $this->getAdditionalParameters($params);
+		if (array_key_exists('IsTest', $additional) && (string)$additional['IsTest'] !== '1') {
+			throw new RobokassaException('Conflicting Invoice API test mode parameter: AdditionalParameters.IsTest');
+		}
+		$additional['IsTest'] = '1';
+		$params['AdditionalParameters'] = $additional;
+
+		return $params;
+	}
+
+	/**
+	 * Подготовка параметров создания холда через Invoice API.
+	 *
+	 * @param array $params
+	 * @return array
+	 * @throws RobokassaException
+	 */
+	private function prepareHoldParams(array $params): array {
+		foreach (array('InvId', 'OutSum') as $required) {
+			if (!array_key_exists($required, $params)) {
+				throw new RobokassaException('Required hold parameters: InvId, OutSum');
+			}
+		}
+		if (!$this->isPositiveInteger($params['InvId'])) {
+			throw new RobokassaException('Invalid hold parameter InvId: positive integer expected.');
+		}
+		if (!$this->isPositiveAmount($params['OutSum'])) {
+			throw new RobokassaException('Invalid hold parameter OutSum: positive decimal expected.');
+		}
+		if (isset($params['InvoiceType']) && $params['InvoiceType'] !== 'OneTime') {
+			throw new RobokassaException('Hold payments support only InvoiceType OneTime.');
+		}
+		if (array_key_exists('StepByStep', $params)) {
+			throw new RobokassaException('Hold parameter StepByStep must be passed inside AdditionalParameters.');
+		}
+
+		$additional = $this->getAdditionalParameters($params);
+		foreach ($additional as $name => $value) {
+			if (!is_string($value)) {
+				throw new RobokassaException(
+					'Invalid hold parameter AdditionalParameters.' . $name . ': string expected.'
+				);
+			}
+		}
+		foreach (array('Recurring', 'Token') as $name) {
+			if (array_key_exists($name, $params)) {
+				throw new RobokassaException('Forbidden hold parameter: ' . $name);
+			}
+			if (array_key_exists($name, $additional)) {
+				throw new RobokassaException('Forbidden hold parameter: AdditionalParameters.' . $name);
+			}
+		}
+		if (array_key_exists('StepByStep', $additional) && $additional['StepByStep'] !== 'true') {
+			throw new RobokassaException('Conflicting hold StepByStep value.');
+		}
+
+		$additional['StepByStep'] = 'true';
+		$params['InvoiceType'] = 'OneTime';
+		$params['AdditionalParameters'] = $additional;
+
+		return $params;
 	}
 
 	/**
@@ -198,7 +370,7 @@ class PaymentService {
 	 * @throws RobokassaException
 	 */
 	private function prepareSavedCardParams(array $params): array {
-		$additional = $this->getSavedCardAdditionalParameters($params);
+		$additional = $this->getAdditionalParameters($params);
 		$rootTokenExists = array_key_exists('Token', $params);
 		$additionalTokenExists = array_key_exists('Token', $additional);
 
@@ -245,7 +417,7 @@ class PaymentService {
 	 * @return array
 	 * @throws RobokassaException
 	 */
-	private function getSavedCardAdditionalParameters(array $params): array {
+	private function getAdditionalParameters(array $params): array {
 		if (!array_key_exists('AdditionalParameters', $params)) {
 			return array();
 		}
@@ -253,6 +425,26 @@ class PaymentService {
 			throw new RobokassaException('AdditionalParameters must be an array.');
 		}
 		return $params['AdditionalParameters'];
+	}
+
+	/**
+	 * Проверяет параметры подтверждения и отмены холда.
+	 *
+	 * @param int $invoiceID
+	 * @param string $outSum
+	 * @return void
+	 * @throws RobokassaException
+	 */
+	private function assertHoldActionParams(int $invoiceID, string $outSum): void {
+		if ($this->isTest) {
+			throw new RobokassaException('Hold confirmation and cancellation are not supported in test mode.');
+		}
+		if ($invoiceID <= 0) {
+			throw new RobokassaException('Invalid hold parameter InvoiceID: positive integer expected.');
+		}
+		if (!$this->isPositiveAmount($outSum)) {
+			throw new RobokassaException('Invalid hold parameter OutSum: positive decimal expected.');
+		}
 	}
 
 	/**
@@ -483,5 +675,30 @@ class PaymentService {
 			throw new RobokassaException('Recurring payment response is not successful.');
 		}
 		return $body;
+	}
+
+	/**
+	 * Разбирает JSON-строку ответа Confirm/Cancel.
+	 *
+	 * @param string $body
+	 * @return bool
+	 * @throws RobokassaException
+	 */
+	private function decodeHoldActionResponse(string $body): bool {
+		if (trim($body) === '') {
+			throw new RobokassaException('Empty hold action response.');
+		}
+		$data = json_decode($body, true);
+		if (json_last_error() !== JSON_ERROR_NONE) {
+			throw new RobokassaException('Invalid JSON in hold action response: ' . json_last_error_msg());
+		}
+		if ($data === 'success: true') {
+			return true;
+		}
+		if ($data === 'success: false') {
+			return false;
+		}
+
+		throw new RobokassaException('Unexpected hold action response.');
 	}
 }

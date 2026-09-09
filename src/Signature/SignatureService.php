@@ -90,6 +90,56 @@ class SignatureService {
 	}
 
 	/**
+	 * Подпись запроса подтверждения холда.
+	 *
+	 * Формат без чека:
+	 *   hash(algo, "{login}:{outSum}:{invoiceID}:{password1}")
+	 *
+	 * Формат с чеком:
+	 *   hash(algo, "{login}:{outSum}:{invoiceID}:{receipt}:{password1}")
+	 *
+	 * @param string      $login
+	 * @param string      $outSum
+	 * @param string      $invoiceID
+	 * @param string      $password1
+	 * @param string|null $receipt    URL-кодированный JSON чека
+	 * @param string|null $algo
+	 * @return string
+	 * @throws RobokassaException
+	 */
+	public function signHoldConfirm($login, $outSum, $invoiceID, $password1, $receipt = null, $algo = null) {
+		$parts = array($login, $outSum, $invoiceID);
+		if ($receipt !== null) {
+			$parts[] = $receipt;
+		}
+		$parts[] = $password1;
+
+		return hash($this->resolveAlgorithm($algo), implode(':', $parts));
+	}
+
+	/**
+	 * Подпись запроса отмены холда.
+	 *
+	 * Формат:
+	 *   hash(algo, "{login}::{invoiceID}:{password1}")
+	 *
+	 * Пустой сегмент суммы обязателен.
+	 *
+	 * @param string      $login
+	 * @param string      $invoiceID
+	 * @param string      $password1
+	 * @param string|null $algo
+	 * @return string
+	 * @throws RobokassaException
+	 */
+	public function signHoldCancel($login, $invoiceID, $password1, $algo = null) {
+		return hash(
+			$this->resolveAlgorithm($algo),
+			$login . '::' . $invoiceID . ':' . $password1
+		);
+	}
+
+	/**
 	 * Собирает строку для подписи платёжного запроса.
 	 *
 	 * @param array $params

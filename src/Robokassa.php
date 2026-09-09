@@ -20,6 +20,8 @@ class Robokassa {
 	private string $paymentCurl	  = 'https://auth.robokassa.ru/Merchant/Indexjson.aspx';
 	private string $jwtApiUrl	  = 'https://services.robokassa.ru/InvoiceServiceWebApi/api/CreateInvoice';
 	private string $recurringUrl  = 'https://auth.robokassa.ru/Merchant/Recurring';
+	private string $holdConfirmUrl = 'https://auth.robokassa.ru/Merchant/Payment/Confirm';
+	private string $holdCancelUrl  = 'https://auth.robokassa.ru/Merchant/Payment/Cancel';
 	private string $webServiceUrl = 'https://auth.robokassa.ru/Merchant/WebService/Service.asmx';
 
 	private bool $is_test = false;
@@ -129,7 +131,9 @@ class Robokassa {
 			$this->paymentCurl,
 			$this->jwtApiUrl,
 			$this->hashType,
-			$this->recurringUrl
+			$this->recurringUrl,
+			$this->holdConfirmUrl,
+			$this->holdCancelUrl
 		);
 	}
 
