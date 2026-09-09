@@ -39,16 +39,19 @@ md5, ripemd160, sha1, sha256, sha384, sha512
 
 ## Доступные методы
 
-| Метод | Описание | Документация |
-| --- | --- | --- |
-| `payment()->sendJwt(array $params): string` | Рекомендуемый способ. Создаёт ссылку на оплату через JWT-интерфейс. | [Invoice API](https://docs.robokassa.ru/ru/invoice-api) |
+| Метод | Описание                                                                     | Документация |
+| --- |------------------------------------------------------------------------------| --- |
+| `payment()->sendJwt(array $params): string` | Рекомендуемый способ. Создаёт ссылку на оплату через JWT-интерфейс.          | [Invoice API](https://docs.robokassa.ru/ru/invoice-api) |
 | `payment()->sendSavedCard(array $params): string` | Создаёт счёт для оплаты по сохранённой банковской карте через JWT-интерфейс. | [Оплата по сохраненной карте](https://docs.robokassa.ru/ru/saving) |
-| `payment()->sendRecurring(array $params): string` | Создаёт дочерний рекуррентный платёж по оплаченной материнской операции. | [Периодические платежи](https://docs.robokassa.ru/ru/recurring-payments) |
-| `status()->getInvoiceInformationList(array $filters): array` | Получает список выставленных счетов по фильтрам. | [Invoice API](https://docs.robokassa.ru/ru/invoice-api) |
-| `webService()->getPaymentMethods(string $lang = 'en'): array` | Получает список доступных способов оплаты. | [XML-интерфейсы](https://docs.robokassa.ru/ru/xml-interfaces) |
-| `webService()->opState(int $invoiceID): array` | Получает статус оплаты по `InvoiceID`. | [XML-интерфейсы](https://docs.robokassa.ru/ru/xml-interfaces) |
-| `receipt()->sendSecondCheck(array $payload): string` | Отправляет запрос на формирование второго чека. | [Второй чек](https://docs.robokassa.ru/ru/second-receipt.html) |
-| `receipt()->getCheckStatus(array $payload): array` | Получает статус фискального чека. | [Второй чек](https://docs.robokassa.ru/ru/second-receipt.html) |
+| `payment()->sendHold(array $params): string` | Создаёт счёт для двухстадийной оплаты.                                       | [Холдирование](https://docs.robokassa.ru/ru/holding.html) |
+| `payment()->confirmHold(int $invoiceID, string $outSum, ?array $receipt = null): bool` | Подтверждает списание удержанных средств.                                    | [Холдирование](https://docs.robokassa.ru/ru/holding.html#request) |
+| `payment()->cancelHold(int $invoiceID, string $outSum): bool` | Отменяет холдирование.                                                       | [Холдирование](https://docs.robokassa.ru/ru/holding.html#cancel) |
+| `payment()->sendRecurring(array $params): string` | Создаёт дочерний рекуррентный платёж по оплаченной материнской операции.     | [Периодические платежи](https://docs.robokassa.ru/ru/recurring-payments) |
+| `status()->getInvoiceInformationList(array $filters): array` | Получает список выставленных счетов по фильтрам.                             | [Invoice API](https://docs.robokassa.ru/ru/invoice-api) |
+| `webService()->getPaymentMethods(string $lang = 'en'): array` | Получает список доступных способов оплаты.                                   | [XML-интерфейсы](https://docs.robokassa.ru/ru/xml-interfaces) |
+| `webService()->opState(int $invoiceID): array` | Получает статус оплаты по `InvoiceID`.                                       | [XML-интерфейсы](https://docs.robokassa.ru/ru/xml-interfaces) |
+| `receipt()->sendSecondCheck(array $payload): string` | Отправляет запрос на формирование второго чека.                              | [Второй чек](https://docs.robokassa.ru/ru/second-receipt.html) |
+| `receipt()->getCheckStatus(array $payload): array` | Получает статус фискального чека.                                            | [Второй чек](https://docs.robokassa.ru/ru/second-receipt.html) |
 
 ## Создание ссылки на оплату через JWT
 
@@ -88,6 +91,57 @@ SDK передаст токен в поле `Token` внутри массива 
 ```
 
 Если `AdditionalParameters` уже содержит другие значения, они сохранятся. `Token` нельзя совмещать с `Recurring` и `StepByStep` в одном счёте.
+
+## Холдирование
+
+Опция должна быть предварительно подключена для магазина и работает только с платежами банковскими картами. Для создания двухстадийного платежа используйте `sendHold()`:
+
+```php
+$url = $robokassa->payment()->sendHold([
+	'InvId' => 400001,
+	'OutSum' => '100.00',
+	'Description' => 'Оплата заказа #400001',
+	'AdditionalParameters' => [
+		'ResultURL2' => 'https://example.com/robokassa/result2',
+	],
+]);
+```
+
+SDK создаст одноразовый счёт и самостоятельно добавит строковый параметр:
+
+```php
+'AdditionalParameters' => [
+	'StepByStep' => 'true',
+]
+```
+
+`StepByStep` нельзя совмещать с `Recurring` и `Token`. Уведомление о переходе операции в `HOLD` поступает на `ResultURL2`; подпись входящего JWS необходимо проверить до изменения состояния заказа.
+
+После получения состояния `HOLD` подтвердите списание:
+
+```php
+$accepted = $robokassa->payment()->confirmHold(400001, '100.00');
+```
+
+При необходимости в третьем аргументе можно передать обновлённый чек. Сумму и состав корзины разрешено изменять только в меньшую сторону:
+
+```php
+$accepted = $robokassa->payment()->confirmHold(400001, '90.00', $updatedReceipt);
+```
+
+Для отмены холда:
+
+```php
+$accepted = $robokassa->payment()->cancelHold(400001, '100.00');
+```
+
+Возвращаемое значение показывает только, принят ли запрос Robokassa. Оно не является конечным статусом операции. После Confirm или Cancel проверьте состояние через `webService()->opState()`:
+
+```php
+$state = $robokassa->webService()->opState(400001);
+```
+
+Основные коды состояния холда: `20` — средства удержаны, `50` — операция обрабатывается, `60` — холд отменён, `100` — списание подтверждено. При `false` или сетевой ошибке не повторяйте Confirm/Cancel автоматически: сначала запросите состояние операции. Confirm и Cancel не поддерживают тестовый режим.
 
 ## Рекуррентные платежи
 
@@ -177,6 +231,7 @@ $url = $robokassa->payment()->sendCurl([
 
 * [`send_payment_jwt.php`](./examples/send_payment_jwt.php) — создание ссылки на оплату через JWT.
 * [`send_saved_card_payment.php`](./examples/send_saved_card_payment.php) — создание счёта для оплаты по сохранённой карте.
+* [`hold_payment.php`](./examples/hold_payment.php) — создание, подтверждение, отмена и проверка двухстадийного платежа.
 * [`send_recurring_payment.php`](./examples/send_recurring_payment.php) — создание дочернего рекуррентного платежа по оплаченной материнской операции.
 * [`get_invoice_information.php`](./examples/get_invoice_information.php) — получение списка счетов через `$robokassa->status()`.
 * [`get_payment_methods.php`](./examples/get_payment_methods.php) — получение доступных способов оплаты.

@@ -65,6 +65,24 @@ class ExamplesTest extends TestCase {
 			hash($algorithm, 'login:10:20:p1'),
 			$sign->createPaymentSignature($params, 'login', 'p1')
 		);
+		$this->assertSame(
+			hash($algorithm, 'login:10:20:p1'),
+			$sign->signHoldConfirm('login', '10', '20', 'p1')
+		);
+		$this->assertSame(
+			hash($algorithm, 'login::20:p1'),
+			$sign->signHoldCancel('login', '20', 'p1')
+		);
+	}
+
+	public function testHoldConfirmSignatureIncludesEncodedReceipt(): void {
+		$sign = new SignatureService('md5');
+		$receipt = '%7B%22items%22%3A%5B%5D%7D';
+
+		$this->assertSame(
+			hash('md5', 'login:10.00:20:' . $receipt . ':p1'),
+			$sign->signHoldConfirm('login', '10.00', '20', 'p1', $receipt)
+		);
 	}
 
 	public function signatureAlgorithmProvider(): array {
@@ -308,6 +326,222 @@ class ExamplesTest extends TestCase {
 				),
 				'Forbidden saved card parameter: AdditionalParameters.StepByStep',
 			),
+		);
+	}
+
+	public function testSendHoldCreatesOneTimeInvoiceWithStepByStep(): void {
+		$this->http->queueResponse(new Response('{"url":"https://pay","isSuccess":true}', 200));
+
+		$url = $this->createRobo()->payment()->sendHold(array(
+			'InvId' => 400001,
+			'OutSum' => '100.00',
+			'Description' => 'Hold payment',
+			'AdditionalParameters' => array(
+				'Email' => 'customer@example.com',
+				'ResultURL2' => 'https://example.test/result2',
+			),
+		));
+
+		$payload = $this->decodeJwtPayloadFromLastBody();
+
+		$this->assertSame('https://pay', $url);
+		$this->assertSame('https://services.robokassa.ru/InvoiceServiceWebApi/api/CreateInvoice', $this->http->lastUrl);
+		$this->assertSame('OneTime', $payload['InvoiceType']);
+		$this->assertArrayNotHasKey('StepByStep', $payload);
+		$this->assertSame(array(
+			'Email' => 'customer@example.com',
+			'ResultURL2' => 'https://example.test/result2',
+			'StepByStep' => 'true',
+		), $payload['AdditionalParameters']);
+	}
+
+	public function testSendHoldUsesTestInvoiceParametersAndPassword(): void {
+		$this->http->queueResponse(new Response('{"url":"https://pay","isSuccess":true}', 200));
+
+		$this->createRobo(null, array(
+			'is_test' => true,
+			'test_password1' => 'tp1',
+			'test_password2' => 'tp2',
+		))->payment()->sendHold(array(
+			'InvId' => 400001,
+			'OutSum' => '100.00',
+		));
+
+		$payload = $this->decodeJwtPayloadFromLastBody();
+		$jwt = json_decode($this->http->lastBody, true);
+		$parts = explode('.', $jwt);
+		$toSign = $parts[0] . '.' . $parts[1];
+		$sign = new SignatureService('md5');
+
+		$this->assertSame('1', $payload['AdditionalParameters']['IsTest']);
+		$this->assertSame('true', $payload['AdditionalParameters']['StepByStep']);
+		$this->assertSame($sign->jwtSignMd5($toSign, 'login', 'tp1'), $parts[2]);
+	}
+
+	/**
+	 * @dataProvider invalidHoldCreationProvider
+	 */
+	public function testSendHoldRejectsInvalidParameters(array $params, string $message): void {
+		$this->expectException(RobokassaException::class);
+		$this->expectExceptionMessage($message);
+
+		$this->createRobo()->payment()->sendHold($params);
+	}
+
+	public function invalidHoldCreationProvider(): array {
+		$base = array('InvId' => 400001, 'OutSum' => '100.00');
+
+		return array(
+			array(array('OutSum' => '100.00'), 'Required hold parameters: InvId, OutSum'),
+			array(array('InvId' => 400001), 'Required hold parameters: InvId, OutSum'),
+			array(array('InvId' => 0, 'OutSum' => '100.00'), 'Invalid hold parameter InvId'),
+			array(array('InvId' => 400001, 'OutSum' => '1e2'), 'Invalid hold parameter OutSum'),
+			array($base + array('InvoiceType' => 'Reusable'), 'Hold payments support only InvoiceType OneTime.'),
+			array($base + array('StepByStep' => 'true'), 'StepByStep must be passed inside AdditionalParameters'),
+			array($base + array('Recurring' => 'true'), 'Forbidden hold parameter: Recurring'),
+			array($base + array('Token' => 'saved-card-token'), 'Forbidden hold parameter: Token'),
+			array(
+				$base + array('AdditionalParameters' => array('Recurring' => 'true')),
+				'Forbidden hold parameter: AdditionalParameters.Recurring'
+			),
+			array(
+				$base + array('AdditionalParameters' => array('Token' => 'saved-card-token')),
+				'Forbidden hold parameter: AdditionalParameters.Token'
+			),
+			array(
+				$base + array('AdditionalParameters' => array('StepByStep' => 'false')),
+				'Conflicting hold StepByStep value.'
+			),
+			array(
+				$base + array('AdditionalParameters' => array('Email' => 123)),
+				'Invalid hold parameter AdditionalParameters.Email: string expected.'
+			),
+		);
+	}
+
+	public function testSendHoldReportsInvoiceApiBusinessError(): void {
+		$this->http->queueResponse(new Response('{"isSuccess":false,"message":"Hold is unavailable"}', 200));
+
+		$this->expectException(RobokassaException::class);
+		$this->expectExceptionMessage('Invoice API request failed: Hold is unavailable');
+
+		$this->createRobo()->payment()->sendHold(array(
+			'InvId' => 400001,
+			'OutSum' => '100.00',
+		));
+	}
+
+	public function testConfirmHoldBuildsRequestAndReturnsAcceptedState(): void {
+		$this->http->queueResponse(new Response('"success: true"', 200));
+
+		$accepted = $this->createRobo()->payment()->confirmHold(400001, '100.00');
+
+		$this->assertTrue($accepted);
+		$this->assertSame('https://auth.robokassa.ru/Merchant/Payment/Confirm', $this->http->lastUrl);
+		$this->assertSame(array('Content-Type' => 'application/x-www-form-urlencoded'), $this->http->lastHeaders);
+		$this->assertSame(
+			'MerchantLogin=login&InvoiceID=400001&OutSum=100.00&SignatureValue='
+				. hash('md5', 'login:100.00:400001:p1'),
+			$this->http->lastBody
+		);
+	}
+
+	public function testConfirmHoldEncodesReceiptAndSignsItsRequestValue(): void {
+		$this->http->queueResponse(new Response('"success: true"', 200));
+		$receipt = array(
+			'items' => array(array(
+				'name' => 'Updated item',
+				'quantity' => 1,
+				'sum' => 90,
+				'payment_method' => 'full_payment',
+				'payment_object' => 'commodity',
+				'tax' => 'none',
+			)),
+		);
+
+		$this->createRobo()->payment()->confirmHold(400001, '90.00', $receipt);
+
+		parse_str($this->http->lastBody, $body);
+		$this->assertSame(urlencode(json_encode($receipt)), $body['Receipt']);
+		$this->assertSame(
+			hash('md5', 'login:90.00:400001:' . $body['Receipt'] . ':p1'),
+			$body['SignatureValue']
+		);
+	}
+
+	public function testCancelHoldKeepsOutSumOutOfSignatureAndReturnsRejectedState(): void {
+		$this->http->queueResponse(new Response('"success: false"', 200));
+
+		$accepted = $this->createRobo()->payment()->cancelHold(400001, '100.00');
+
+		$this->assertFalse($accepted);
+		$this->assertSame('https://auth.robokassa.ru/Merchant/Payment/Cancel', $this->http->lastUrl);
+		$this->assertSame(
+			'MerchantLogin=login&InvoiceID=400001&OutSum=100.00&SignatureValue='
+				. hash('md5', 'login::400001:p1'),
+			$this->http->lastBody
+		);
+	}
+
+	public function testHoldActionsUseConfiguredSignatureAlgorithm(): void {
+		$this->http->queueResponse(new Response('"success: true"', 200));
+
+		$this->createRobo(null, array('hashType' => 'sha256'))
+			->payment()
+			->confirmHold(400001, '100.00');
+
+		$this->assertStringContainsString(
+			'SignatureValue=' . hash('sha256', 'login:100.00:400001:p1'),
+			$this->http->lastBody
+		);
+	}
+
+	/**
+	 * @dataProvider invalidHoldActionResponseProvider
+	 */
+	public function testConfirmHoldRejectsInvalidResponse(string $body, string $message): void {
+		$this->http->queueResponse(new Response($body, 200));
+		$this->expectException(RobokassaException::class);
+		$this->expectExceptionMessage($message);
+
+		$this->createRobo()->payment()->confirmHold(400001, '100.00');
+	}
+
+	public function invalidHoldActionResponseProvider(): array {
+		return array(
+			array('', 'Empty hold action response.'),
+			array('success: true', 'Invalid JSON in hold action response'),
+			array('{"success":true}', 'Unexpected hold action response.'),
+			array('"unknown"', 'Unexpected hold action response.'),
+		);
+	}
+
+	public function testHoldActionsRejectTestMode(): void {
+		$this->expectException(RobokassaException::class);
+		$this->expectExceptionMessage('Hold confirmation and cancellation are not supported in test mode.');
+
+		$this->createRobo(null, array(
+			'is_test' => true,
+			'test_password1' => 'tp1',
+			'test_password2' => 'tp2',
+		))->payment()->confirmHold(400001, '100.00');
+	}
+
+	/**
+	 * @dataProvider invalidHoldActionParamsProvider
+	 */
+	public function testHoldActionsRejectInvalidParams(int $invoiceID, string $outSum, string $message): void {
+		$this->expectException(RobokassaException::class);
+		$this->expectExceptionMessage($message);
+
+		$this->createRobo()->payment()->cancelHold($invoiceID, $outSum);
+	}
+
+	public function invalidHoldActionParamsProvider(): array {
+		return array(
+			array(0, '100.00', 'Invalid hold parameter InvoiceID'),
+			array(400001, '0', 'Invalid hold parameter OutSum'),
+			array(400001, '1,00', 'Invalid hold parameter OutSum'),
 		);
 	}
 
