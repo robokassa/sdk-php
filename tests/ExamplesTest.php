@@ -197,6 +197,267 @@ class ExamplesTest extends TestCase {
 		$this->assertArrayNotHasKey('Recurring', $payload);
 	}
 
+	public function testSendSplitPassesJsonStringInAdditionalParameters(): void {
+		$this->http->queueResponse(new Response('{"url":"https://pay/split","isSuccess":true}', 200));
+		$split = $this->splitMerchants();
+
+		$url = $this->createRobo()->payment()->sendSplit(array(
+			'InvId' => 500001,
+			'OutSum' => 700,
+			'InvoiceType' => 'Reusable',
+			'Description' => 'Split payment',
+			'Split' => $split,
+			'AdditionalParameters' => array(
+				'Email' => 'customer@example.com',
+				'ResultURL2' => 'https://example.test/result2',
+			),
+		));
+
+		$payload = $this->decodeJwtPayloadFromLastBody();
+		$encodedSplit = $payload['AdditionalParameters']['Split'];
+
+		$this->assertSame('https://pay/split', $url);
+		$this->assertSame('https://services.robokassa.ru/InvoiceServiceWebApi/api/CreateInvoice', $this->http->lastUrl);
+		$this->assertSame(array('Content-Type' => 'application/json'), $this->http->lastHeaders);
+		$this->assertSame('Reusable', $payload['InvoiceType']);
+		$this->assertArrayNotHasKey('Split', $payload);
+		$this->assertSame('customer@example.com', $payload['AdditionalParameters']['Email']);
+		$this->assertSame('https://example.test/result2', $payload['AdditionalParameters']['ResultURL2']);
+		$this->assertSame($split, json_decode($encodedSplit, true));
+		$this->assertStringContainsString('Товар / услуга', $encodedSplit);
+		$this->assertStringContainsString('https://example.test/item', $encodedSplit);
+		$this->assertStringNotContainsString('%7B', $encodedSplit);
+	}
+
+	public function testSendSplitKeepsAllCreateInvoiceParameters(): void {
+		$this->http->queueResponse(new Response('{"url":"https://pay/split","isSuccess":true}', 200));
+		$invoiceItems = array(array(
+			'Name' => 'Invoice item',
+			'Quantity' => 1,
+			'Cost' => 700,
+			'Tax' => 'none',
+		));
+		$expected = array(
+			'ExpirationDate' => '2026-12-31T23:59:59+03:00',
+			'Description' => 'Split payment',
+			'FiscalParentOpId' => 123456,
+			'MerchantComments' => 'Internal comment',
+			'InvoiceItems' => $invoiceItems,
+			'UserFields' => array('order' => '500003'),
+			'SuccessUrl2Data' => array('Url' => 'https://example.test/success', 'Method' => 'GET'),
+			'FailUrl2Data' => array('Url' => 'https://example.test/fail', 'Method' => 'POST'),
+			'Aliases' => array('BankCard', 'SBP'),
+			'Payments' => array(array('Type' => 'Cashless', 'Sum' => 700)),
+			'CustomUserProperty' => array('Name' => 'source', 'Value' => 'marketplace'),
+			'IsWithoutFreeSale' => true,
+			'Sno' => 'osn',
+		);
+
+		$this->createRobo()->payment()->sendSplit(array_merge(array(
+			'InvId' => 500003,
+			'OutSum' => 700,
+			'InvoiceType' => 'Reusable',
+			'Culture' => 'en',
+			'Split' => $this->splitMerchants(),
+		), $expected));
+
+		$payload = $this->decodeJwtPayloadFromLastBody();
+
+		$this->assertSame('Reusable', $payload['InvoiceType']);
+		$this->assertSame('en', $payload['Culture']);
+		foreach ($expected as $name => $value) {
+			$this->assertArrayHasKey($name, $payload);
+			$this->assertSame($value, $payload[$name]);
+		}
+	}
+
+	public function testSendSplitAcceptsReceiptPrecisionLimits(): void {
+		$this->http->queueResponse(new Response('{"url":"https://pay/split","isSuccess":true}', 200));
+		$split = $this->splitMerchants();
+		$split[0]['receipt']['items'][0]['quantity'] = 99999.999;
+		$split[0]['receipt']['items'][0]['sum'] = 99999999.99;
+
+		$this->createRobo()->payment()->sendSplit(array(
+			'InvId' => 500004,
+			'OutSum' => 700,
+			'Split' => $split,
+		));
+
+		$payload = $this->decodeJwtPayloadFromLastBody();
+		$encodedSplit = json_decode($payload['AdditionalParameters']['Split'], true);
+
+		$this->assertSame(99999.999, $encodedSplit[0]['receipt']['items'][0]['quantity']);
+		$this->assertSame(99999999.99, $encodedSplit[0]['receipt']['items'][0]['sum']);
+	}
+
+	public function testSendSplitKeepsUnrelatedInvoiceParametersUntouched(): void {
+		$this->http->queueResponse(new Response('{"url":"https://pay/split","isSuccess":true}', 200));
+
+		$this->createRobo()->payment()->sendSplit(array(
+			'InvId' => 500002,
+			'OutSum' => 700,
+			'Culture' => 'en',
+			'Split' => $this->splitMerchants(),
+			'AdditionalParameters' => array(
+				'Recurring' => 'true',
+			),
+		));
+
+		$payload = $this->decodeJwtPayloadFromLastBody();
+
+		$this->assertSame('en', $payload['Culture']);
+		$this->assertSame('true', $payload['AdditionalParameters']['Recurring']);
+		$this->assertArrayHasKey('Split', $payload['AdditionalParameters']);
+	}
+
+	public function testSendSplitRejectsTestMode(): void {
+		$this->expectException(RobokassaException::class);
+		$this->expectExceptionMessage('Split payments are not supported in test mode.');
+
+		$this->createRobo(null, array(
+			'is_test' => true,
+			'test_password1' => 'tp1',
+			'test_password2' => 'tp2',
+		))->payment()->sendSplit(array(
+			'InvId' => 500001,
+			'OutSum' => 700,
+			'Split' => $this->splitMerchants(),
+		));
+	}
+
+	/**
+	 * @dataProvider invalidSplitProvider
+	 */
+	public function testSendSplitRejectsInvalidParameters(array $params, string $message): void {
+		$this->expectException(RobokassaException::class);
+		$this->expectExceptionMessage($message);
+
+		$this->createRobo()->payment()->sendSplit($params);
+	}
+
+	public function invalidSplitProvider(): array {
+		$base = array('InvId' => 500001, 'OutSum' => 700);
+		$merchant = array('id' => 'login', 'amount' => 700);
+		$item = array('name' => 'Item', 'quantity' => 1, 'sum' => 700, 'tax' => 'none');
+
+		return array(
+			array($base, 'Required split parameter: Split'),
+			array($base + array('Split' => array()), 'Split must be a non-empty array of merchants.'),
+			array(
+				$base + array('Split' => array('master' => $merchant)),
+				'Split must be a list of merchants.'
+			),
+			array($base + array('Split' => array('merchant')), 'Split[0] must be an array.'),
+			array(
+				$base + array('Split' => array(array('amount' => 700))),
+				'Split[0].id must be a non-empty string.'
+			),
+			array(
+				$base + array('Split' => array(array('id' => 'login'))),
+				'Required split parameter: Split[0].amount'
+			),
+			array(
+				$base + array('Split' => array(array('id' => 'login', 'amount' => '700.00'))),
+				'Split[0].amount must be a non-negative number.'
+			),
+			array(
+				$base + array('Split' => array(array('id' => 'login', 'amount' => -1))),
+				'Split[0].amount must be a non-negative number.'
+			),
+			array(
+				$base + array('Split' => array($merchant + array('InvoiceId' => '1'))),
+				'Split[0].InvoiceId must be a non-negative integer.'
+			),
+			array(
+				$base + array('Split' => array($merchant + array('receipt' => array()))),
+				'Split[0].receipt.items must be a non-empty array.'
+			),
+			array(
+				$base + array('Split' => array($merchant + array('receipt' => array(
+					'items' => array(array_merge($item, array('tax' => 'vat99'))),
+				)))),
+				'Split[0].receipt.items[0].tax has an unsupported value.'
+			),
+			array(
+				$base + array('Split' => array($merchant + array('receipt' => array(
+					'items' => array(array_merge($item, array('quantity' => 0))),
+				)))),
+				'Split[0].receipt.items[0].quantity must be a positive decimal with up to 5 integer and 3 fractional digits.'
+			),
+			array(
+				$base + array('Split' => array($merchant + array('receipt' => array(
+					'items' => array(array_merge($item, array('quantity' => 1.2345))),
+				)))),
+				'Split[0].receipt.items[0].quantity must be a positive decimal with up to 5 integer and 3 fractional digits.'
+			),
+			array(
+				$base + array('Split' => array($merchant + array('receipt' => array(
+					'items' => array(array_merge($item, array('quantity' => 123456))),
+				)))),
+				'Split[0].receipt.items[0].quantity must be a positive decimal with up to 5 integer and 3 fractional digits.'
+			),
+			array(
+				$base + array('Split' => array($merchant + array('receipt' => array(
+					'items' => array(array_merge($item, array('sum' => 1.234))),
+				)))),
+				'Split[0].receipt.items[0].sum must be a non-negative decimal with up to 8 integer and 2 fractional digits.'
+			),
+			array(
+				$base + array('Split' => array($merchant + array('receipt' => array(
+					'items' => array(array_merge($item, array('sum' => 123456789))),
+				)))),
+				'Split[0].receipt.items[0].sum must be a non-negative decimal with up to 8 integer and 2 fractional digits.'
+			),
+			array(
+				$base + array('Split' => array($merchant + array('receipt' => array(
+					'items' => array($item + array('payment_method' => 'unknown')),
+				)))),
+				'Split[0].receipt.items[0].payment_method has an unsupported value.'
+			),
+			array(
+				$base + array(
+					'Split' => array($merchant),
+					'AdditionalParameters' => array('Email' => 123),
+				),
+				'Invalid split parameter AdditionalParameters.Email: string expected.'
+			),
+			array(
+				$base + array(
+					'Split' => array($merchant),
+					'AdditionalParameters' => array('IsTest' => '1'),
+				),
+				'Split payments are not compatible with IsTest.'
+			),
+		);
+	}
+
+	public function testSendSplitRejectsAdditionalParametersSplit(): void {
+		$this->expectException(RobokassaException::class);
+		$this->expectExceptionMessage(
+			'Split must be passed as a top-level SDK parameter, not as AdditionalParameters.Split.'
+		);
+
+		$this->createRobo()->payment()->sendSplit(array(
+			'InvId' => 500001,
+			'OutSum' => 700,
+			'Split' => $this->splitMerchants(),
+			'AdditionalParameters' => array('Split' => '[]'),
+		));
+	}
+
+	public function testSendSplitReportsInvoiceApiBusinessError(): void {
+		$this->http->queueResponse(new Response('{"isSuccess":false,"message":"Split is unavailable"}', 200));
+
+		$this->expectException(RobokassaException::class);
+		$this->expectExceptionMessage('Invoice API request failed: Split is unavailable');
+
+		$this->createRobo()->payment()->sendSplit(array(
+			'InvId' => 500001,
+			'OutSum' => 700,
+			'Split' => $this->splitMerchants(),
+		));
+	}
+
 	public function testSendSavedCardPassesTokenInAdditionalParameters(): void {
 		$this->http->queueResponse(new Response('{"url":"https://pay"}', 200));
 
@@ -849,6 +1110,34 @@ class ExamplesTest extends TestCase {
 			. '%2522full_payment%2522%252C%2522payment_object%2522%253A%2522service%2522%252C%2522tax%2522%253A'
 			. '%2522none%2522%257D%255D%257D&Shp_order=abc%2B1&MerchantLogin=login'
 			. '&SignatureValue=1be6746b70e8f702171f85e427399a9e';
+	}
+
+	private function splitMerchants(): array {
+		return array(
+			array(
+				'id' => 'login',
+				'InvoiceId' => 500001,
+				'amount' => 500,
+				'receipt' => array(
+					'sno' => 'osn',
+					'items' => array(
+						array(
+							'name' => 'Товар / услуга https://example.test/item',
+							'quantity' => 1,
+							'sum' => 500,
+							'tax' => 'vat20',
+							'payment_method' => 'full_payment',
+							'payment_object' => 'commodity',
+							'nomenclature_code' => '1231',
+						),
+					),
+				),
+			),
+			array(
+				'id' => 'partner-shop',
+				'amount' => 200,
+			),
+		);
 	}
 
 	private function decodeJwtPayloadFromLastBody(): array {

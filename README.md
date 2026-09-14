@@ -42,6 +42,7 @@ md5, ripemd160, sha1, sha256, sha384, sha512
 | Метод | Описание                                                                     | Документация |
 | --- |------------------------------------------------------------------------------| --- |
 | `payment()->sendJwt(array $params): string` | Рекомендуемый способ. Создаёт ссылку на оплату через JWT-интерфейс.          | [Invoice API](https://docs.robokassa.ru/ru/invoice-api) |
+| `payment()->sendSplit(array $params): string` | Создаёт счёт со сплитованием платежа.                     | [Сплитование платежей](https://docs.robokassa.ru/ru/split-payments) |
 | `payment()->sendSavedCard(array $params): string` | Создаёт счёт для оплаты по сохранённой банковской карте через JWT-интерфейс. | [Оплата по сохраненной карте](https://docs.robokassa.ru/ru/saving) |
 | `payment()->sendHold(array $params): string` | Создаёт счёт для двухстадийной оплаты.                                       | [Холдирование](https://docs.robokassa.ru/ru/holding.html) |
 | `payment()->confirmHold(int $invoiceID, string $outSum, ?array $receipt = null): bool` | Подтверждает списание удержанных средств.                                    | [Холдирование](https://docs.robokassa.ru/ru/holding.html#request) |
@@ -65,6 +66,58 @@ $url = $robokassa->payment()->sendJwt([
 ```
 
 Метод возвращает строку со ссылкой на оплату.
+
+## Сплитование платежа
+
+Сплитование передаётся через `CreateInvoice` в строковом параметре `AdditionalParameters.Split`. Для удобства передайте в `sendSplit()` нативный PHP-массив участников верхнеуровневым параметром `Split` — SDK проверит его, сериализует в JSON и добавит в `AdditionalParameters`:
+
+```php
+$url = $robokassa->payment()->sendSplit([
+	'OutSum' => 700.00,
+	'InvId' => 500001,
+	'Description' => 'Оплата заказа #500001',
+	'ExpirationDate' => '2026-12-31T23:59:59+03:00',
+	'Aliases' => ['BankCard', 'SBP'],
+	'Split' => [
+		[
+			'id' => 'master-shop',
+			'InvoiceId' => 500001,
+			'amount' => 500,
+			'receipt' => [
+				'sno' => 'osn',
+				'items' => [
+					[
+						'name' => 'Товар 1',
+						'quantity' => 1,
+						'sum' => 500,
+						'tax' => 'vat20',
+						'payment_method' => 'full_payment',
+						'payment_object' => 'commodity',
+					],
+				],
+			],
+		],
+		[
+			'id' => 'partner-shop',
+			'amount' => 200,
+		],
+	],
+	'AdditionalParameters' => [
+		'Email' => 'buyer@example.com',
+	],
+]);
+```
+
+В JWT значение будет выглядеть следующим образом:
+
+```php
+'AdditionalParameters' => [
+	'Email' => 'buyer@example.com',
+	'Split' => '[{"id":"master-shop","InvoiceId":500001,"amount":500,...}]',
+]
+```
+
+`Split` не нужно кодировать в JSON или URL-кодировать самостоятельно. Если требуется передать уже подготовленную JSON-строку вручную, используйте универсальный `sendJwt()`. Сплитование несовместимо только с тестовым режимом `IsTest`; остальные параметры `CreateInvoice` метод не изменяет.
 
 ## Оплата по сохранённой карте
 
@@ -230,6 +283,7 @@ $url = $robokassa->payment()->sendCurl([
 Основные примеры находятся в папке [`examples/`](./examples):
 
 * [`send_payment_jwt.php`](./examples/send_payment_jwt.php) — создание ссылки на оплату через JWT.
+* [`send_split_payment.php`](./examples/send_split_payment.php) — создание счёта со сплитованием.
 * [`send_saved_card_payment.php`](./examples/send_saved_card_payment.php) — создание счёта для оплаты по сохранённой карте.
 * [`hold_payment.php`](./examples/hold_payment.php) — создание, подтверждение, отмена и проверка двухстадийного платежа.
 * [`send_recurring_payment.php`](./examples/send_recurring_payment.php) — создание дочернего рекуррентного платежа по оплаченной материнской операции.
