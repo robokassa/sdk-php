@@ -119,6 +119,17 @@ class PaymentService {
 	}
 
 	/**
+	 * Создание счёта со сплитованием платежа через Invoice API.
+	 *
+	 * @param array $params
+	 * @return string
+	 * @throws RobokassaException
+	 */
+	public function sendSplit(array $params): string {
+		return $this->sendJwt($this->prepareSplitParams($params));
+	}
+
+	/**
 	 * Создание счёта с двухстадийной оплатой через Invoice API.
 	 *
 	 * @param array $params
@@ -264,6 +275,268 @@ class PaymentService {
 		$params['AdditionalParameters'] = $additional;
 
 		return $params;
+	}
+
+	/**
+	 * Подготовка параметров счёта со сплитованием.
+	 *
+	 * @param array $params
+	 * @return array
+	 * @throws RobokassaException
+	 */
+	private function prepareSplitParams(array $params): array {
+		if ($this->isTest) {
+			throw new RobokassaException('Split payments are not supported in test mode.');
+		}
+		if (!array_key_exists('Split', $params)) {
+			throw new RobokassaException('Required split parameter: Split');
+		}
+
+		$additional = $this->getAdditionalParameters($params);
+		if (array_key_exists('Split', $additional)) {
+			throw new RobokassaException(
+				'Split must be passed as a top-level SDK parameter, not as AdditionalParameters.Split.'
+			);
+		}
+		if (array_key_exists('IsTest', $params) || array_key_exists('IsTest', $additional)) {
+			throw new RobokassaException('Split payments are not compatible with IsTest.');
+		}
+		foreach ($additional as $name => $value) {
+			if (!is_string($value)) {
+				throw new RobokassaException(
+					'Invalid split parameter AdditionalParameters.' . $name . ': string expected.'
+				);
+			}
+		}
+
+		$this->assertSplitMerchants($params['Split']);
+		$additional['Split'] = $this->encodeJson(
+			$params['Split'],
+			JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES
+		);
+		$params['AdditionalParameters'] = $additional;
+		unset($params['Split']);
+
+		return $params;
+	}
+
+	/**
+	 * Проверяет список магазинов-участников сплита.
+	 *
+	 * @param mixed $merchants
+	 * @return void
+	 * @throws RobokassaException
+	 */
+	private function assertSplitMerchants($merchants): void {
+		if (!is_array($merchants) || empty($merchants)) {
+			throw new RobokassaException('Split must be a non-empty array of merchants.');
+		}
+		if ($merchants !== array_values($merchants)) {
+			throw new RobokassaException('Split must be a list of merchants.');
+		}
+
+		foreach ($merchants as $index => $merchant) {
+			$path = 'Split[' . $index . ']';
+			if (!is_array($merchant)) {
+				throw new RobokassaException($path . ' must be an array.');
+			}
+			if (!isset($merchant['id']) || !is_string($merchant['id']) || trim($merchant['id']) === '') {
+				throw new RobokassaException($path . '.id must be a non-empty string.');
+			}
+			if (!array_key_exists('amount', $merchant)) {
+				throw new RobokassaException('Required split parameter: ' . $path . '.amount');
+			}
+			$this->assertNonNegativeJsonNumber($merchant['amount'], $path . '.amount');
+
+			if (array_key_exists('InvoiceId', $merchant)
+				&& (!is_int($merchant['InvoiceId']) || $merchant['InvoiceId'] < 0)) {
+				throw new RobokassaException($path . '.InvoiceId must be a non-negative integer.');
+			}
+			if (array_key_exists('receipt', $merchant)) {
+				$this->assertSplitReceipt($merchant['receipt'], $path . '.receipt');
+			}
+		}
+	}
+
+	/**
+	 * Проверяет чек отдельного участника сплита.
+	 *
+	 * @param mixed $receipt
+	 * @param string $path
+	 * @return void
+	 * @throws RobokassaException
+	 */
+	private function assertSplitReceipt($receipt, string $path): void {
+		if (!is_array($receipt)) {
+			throw new RobokassaException($path . ' must be an array.');
+		}
+		if (array_key_exists('sno', $receipt)
+			&& (!is_string($receipt['sno'])
+				|| !in_array($receipt['sno'], array(
+					'osn',
+					'usn_income',
+					'usn_income_outcome',
+					'envd',
+					'esn',
+					'patent',
+				), true))) {
+			throw new RobokassaException($path . '.sno has an unsupported value.');
+		}
+		if (!array_key_exists('items', $receipt)
+			|| !is_array($receipt['items'])
+			|| empty($receipt['items'])) {
+			throw new RobokassaException($path . '.items must be a non-empty array.');
+		}
+		if ($receipt['items'] !== array_values($receipt['items'])) {
+			throw new RobokassaException($path . '.items must be a list.');
+		}
+
+		foreach ($receipt['items'] as $index => $item) {
+			$this->assertSplitReceiptItem($item, $path . '.items[' . $index . ']');
+		}
+	}
+
+	/**
+	 * Проверяет товарную позицию чека участника сплита.
+	 *
+	 * @param mixed $item
+	 * @param string $path
+	 * @return void
+	 * @throws RobokassaException
+	 */
+	private function assertSplitReceiptItem($item, string $path): void {
+		if (!is_array($item)) {
+			throw new RobokassaException($path . ' must be an array.');
+		}
+		if (!isset($item['name']) || !is_string($item['name']) || trim($item['name']) === '') {
+			throw new RobokassaException($path . '.name must be a non-empty string.');
+		}
+		if ($this->stringLength($item['name']) > 128) {
+			throw new RobokassaException($path . '.name must not exceed 128 characters.');
+		}
+		if (!array_key_exists('quantity', $item)) {
+			throw new RobokassaException('Required split parameter: ' . $path . '.quantity');
+		}
+		$this->assertSplitDecimal($item['quantity'], $path . '.quantity', 5, 3, false);
+		if (!array_key_exists('sum', $item)) {
+			throw new RobokassaException('Required split parameter: ' . $path . '.sum');
+		}
+		$this->assertSplitDecimal($item['sum'], $path . '.sum', 8, 2, true);
+		if (!isset($item['tax']) || !is_string($item['tax'])
+			|| !in_array($item['tax'], array('none', 'vat0', 'vat10', 'vat110', 'vat20', 'vat120'), true)) {
+			throw new RobokassaException($path . '.tax has an unsupported value.');
+		}
+
+		$this->assertOptionalSplitEnum($item, 'payment_method', array(
+			'full_prepayment',
+			'prepayment',
+			'advance',
+			'full_payment',
+			'partial_payment',
+			'credit',
+			'credit_payment',
+		), $path);
+		$this->assertOptionalSplitEnum($item, 'payment_object', array(
+			'commodity',
+			'excise',
+			'job',
+			'service',
+			'gambling_bet',
+			'gambling_prize',
+			'lottery',
+			'lottery_prize',
+			'intellectual_activity',
+			'payment',
+			'agent_commission',
+			'composite',
+			'another',
+			'property_right',
+			'non-operating_gain',
+			'insurance_premium',
+			'sales_tax',
+			'resort_fee',
+		), $path);
+
+		if (array_key_exists('nomenclature_code', $item) && !is_string($item['nomenclature_code'])) {
+			throw new RobokassaException($path . '.nomenclature_code must be a string.');
+		}
+	}
+
+	/**
+	 * Проверяет необязательное строковое значение из фиксированного набора.
+	 *
+	 * @param array $data
+	 * @param string $name
+	 * @param array $allowed
+	 * @param string $path
+	 * @return void
+	 * @throws RobokassaException
+	 */
+	private function assertOptionalSplitEnum(array $data, string $name, array $allowed, string $path): void {
+		if (!array_key_exists($name, $data)) {
+			return;
+		}
+		if (!is_string($data[$name]) || !in_array($data[$name], $allowed, true)) {
+			throw new RobokassaException($path . '.' . $name . ' has an unsupported value.');
+		}
+	}
+
+	/**
+	 * @param mixed $value
+	 * @param string $path
+	 * @return void
+	 * @throws RobokassaException
+	 */
+	private function assertNonNegativeJsonNumber($value, string $path): void {
+		if ((!is_int($value) && !is_float($value)) || !is_finite((float)$value) || $value < 0) {
+			throw new RobokassaException($path . ' must be a non-negative number.');
+		}
+	}
+
+	/**
+	 * @param mixed $value
+	 * @param string $path
+	 * @param int $maxIntegerDigits
+	 * @param int $maxFractionDigits
+	 * @param bool $allowZero
+	 * @return void
+	 * @throws RobokassaException
+	 */
+	private function assertSplitDecimal(
+		$value,
+		string $path,
+		int $maxIntegerDigits,
+		int $maxFractionDigits,
+		bool $allowZero
+	): void {
+		$isNumber = is_int($value) || is_float($value);
+		$isFinite = $isNumber && is_finite((float)$value);
+		$isAllowedValue = $isFinite && ($allowZero ? $value >= 0 : $value > 0);
+		$encoded = $isFinite ? json_encode($value, JSON_PRESERVE_ZERO_FRACTION) : false;
+		$pattern = '~^\d{1,' . $maxIntegerDigits . '}(?:\.\d{1,' . $maxFractionDigits . '})?$~D';
+
+		if (!$isFinite || !$isAllowedValue || !is_string($encoded) || preg_match($pattern, $encoded) !== 1) {
+			$constraint = $allowZero ? 'non-negative' : 'positive';
+			throw new RobokassaException(
+				$path . ' must be a ' . $constraint . ' decimal with up to '
+				. $maxIntegerDigits . ' integer and ' . $maxFractionDigits . ' fractional digits.'
+			);
+		}
+	}
+
+	/**
+	 * Возвращает длину UTF-8 строки в символах без зависимости от mbstring.
+	 *
+	 * @param string $value
+	 * @return int
+	 * @throws RobokassaException
+	 */
+	private function stringLength(string $value): int {
+		$count = preg_match_all('~.~us', $value, $matches);
+		if ($count === false) {
+			throw new RobokassaException('Invalid UTF-8 in split receipt item name.');
+		}
+		return $count;
 	}
 
 	/**
@@ -558,12 +831,19 @@ class PaymentService {
 	 */
 	private function appendOptionalJwtPayload(array $payload, array $params): array {
 		$optional = array(
+			'ExpirationDate',
 			'Description',
+			'FiscalParentOpId',
 			'MerchantComments',
 			'InvoiceItems',
 			'UserFields',
 			'SuccessUrl2Data',
 			'FailUrl2Data',
+			'Aliases',
+			'Payments',
+			'CustomUserProperty',
+			'IsWithoutFreeSale',
+			'Sno',
 			'AdditionalParameters',
 		);
 		foreach ($optional as $key) {
